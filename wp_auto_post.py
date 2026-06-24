@@ -155,26 +155,44 @@ def row_no_to_names(no_value: str) -> list[str]:
         return [raw]
 
 
-def markdown_to_html(md_text: str, *, strip_h1: bool, title: str) -> str:
-    """Markdown -> HTML。strip_h1=True なら本文先頭の単一 H1 を除去（タイトル二重表示防止）。"""
+def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
+    """Markdown -> HTML。strip_h1=True なら本文先頭の H1 を無条件で除去する。
+
+    WordPress テーマ側が投稿タイトルを表示するため、本文先頭の H1 はタイトルと
+    一致していなくても二重表示になる。よって先頭 H1（Markdown の `# ...`）は
+    内容に関わらず削除する。本文中の `##` 以降（H2/H3...）は残す。
+    title 引数は後方互換のため残しているが判定には使用しない。
+    """
     text = md_text.lstrip("﻿").lstrip()
     if strip_h1:
         lines = text.split("\n")
-        if lines and lines[0].startswith("# "):
-            heading = lines[0][2:].strip()
-            # 先頭 H1 がタイトルと同等、またはタイトル未指定なら除去する
-            if not title or heading == title.strip() or _normalize(heading) == _normalize(title):
-                lines = lines[1:]
-            text = "\n".join(lines).lstrip()
-    return markdown.markdown(
+        # 先頭の単一行 H1（"# 見出し"）。"##" 以降は対象外。
+        if lines and re.match(r"^#\s+\S", lines[0]) and not lines[0].lstrip().startswith("##"):
+            lines = lines[1:]
+        text = "\n".join(lines).lstrip()
+
+    html = markdown.markdown(
         text,
         extensions=["extra", "tables", "sane_lists", "toc"],
         output_format="html5",
     )
 
+    if strip_h1:
+        html = strip_leading_html_h1(html)
+    return html
 
-def _normalize(s: str) -> str:
-    return re.sub(r"\s+", "", s or "").lower()
+
+def strip_leading_html_h1(html: str) -> str:
+    """HTML 本文の先頭付近にある最初の <h1>...</h1> を1つだけ除去する。
+
+    Markdown ではなく HTML を直接本文として持つケースに対応。先頭の空白や
+    コメント等を読み飛ばし、最初に現れる要素が h1 のときだけ削除する。
+    """
+    # 先頭の空白・HTMLコメントをスキップした位置から最初のタグを見る
+    m = re.match(r"^\s*(?:<!--.*?-->\s*)*<h1\b[^>]*>.*?</h1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        return html[m.end():].lstrip()
+    return html
 
 
 def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | None:
