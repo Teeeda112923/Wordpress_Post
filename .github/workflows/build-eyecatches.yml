@@ -1,0 +1,98 @@
+name: Build Eyecatches
+
+on:
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "生成件数（0 で全件）"
+        type: string
+        required: true
+        default: "1"
+      overwrite:
+        description: "既存のアイキャッチを上書きする"
+        type: boolean
+        required: true
+        default: false
+      input_file:
+        description: "制作管理表のパス"
+        type: string
+        required: true
+        default: "data/seo_80kw_production_management.xlsx"
+      sheet_name:
+        description: "Excel シート名"
+        type: string
+        required: true
+        default: "制作管理表"
+      commit:
+        description: "生成画像をこのブランチへコミットする（false なら Artifact のみ）"
+        type: boolean
+        required: true
+        default: false
+
+concurrency:
+  group: build-eyecatches
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Japanese fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk fonts-ipafont-gothic
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate eyecatches
+        run: |
+          OVERWRITE_FLAG=""
+          if [ "${{ inputs.overwrite }}" = "true" ]; then
+            OVERWRITE_FLAG="--overwrite"
+          fi
+
+          python make_eyecatches.py \
+            --input "${{ inputs.input_file }}" \
+            --sheet "${{ inputs.sheet_name }}" \
+            --base-dir eyecatches_base \
+            --out-dir eyecatches \
+            --limit "${{ inputs.limit }}" \
+            $OVERWRITE_FLAG
+
+      - name: Upload eyecatches artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eyecatches
+          path: eyecatches/*.webp
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit generated eyecatches
+        if: ${{ inputs.commit == true }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add eyecatches/*.webp
+          if git diff --cached --quiet; then
+            echo "コミットする変更はありません。"
+          else
+            git commit -m "Build eyecatches via GitHub Actions"
+            git push
+          fi
