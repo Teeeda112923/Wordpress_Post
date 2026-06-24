@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
 """
-GitHub Actions WordPress auto poster.
+GitHub Actions から WordPress REST API へ記事を自動投稿するスクリプト。
 
-Environment variables:
-- WP_BASE_URL
-- WP_USERNAME
-- WP_APP_PASSWORD
+認証情報は環境変数で受け取ります（コードに直書きしない）:
+- WP_BASE_URL      例: https://example.com
+- WP_USERNAME      WordPress ユーザー名
+- WP_APP_PASSWORD  アプリケーションパスワード（再発行したもの）
+
+使い方:
+    python wp_auto_post.py \
+        --input data/seo_80kw_production_management.xlsx \
+        --sheet 制作管理表 \
+        --articles-dir articles \
+        --images-dir eyecatches \
+        --post-status draft \
+        --dry-run \
+        --limit 1
 """
 
 from __future__ import annotations
@@ -16,19 +26,43 @@ import datetime as dt
 import mimetypes
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
 import markdown
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 from slugify import slugify
+from urllib3.util.retry import Retry
 
 
+# --------------------------------------------------------------------------- #
+# 列名候補（用途 -> 候補リスト）。完全一致 -> 部分一致の順で柔軟に探索する。
+# --------------------------------------------------------------------------- #
+COLUMN_CANDIDATES: dict[str, list[str]] = {
+    "no": ["No", "番号", "記事No", "ID"],
+    "kw": ["指定KW", "管理KW", "KW", "キーワード", "親KW"],
+    "title": ["記事タイトル案", "記事タイトル", "タイトル", "H1", "title"],
+    "slug": ["スラッグ", "slug", "Slug"],
+    "meta": ["メタディスクリプション案", "メタディスクリプション", "description", "概要"],
+    "category": ["WPカテゴリ", "カテゴリ", "記事カテゴリ", "category"],
+    "tag": ["タグ案", "タグ", "WPタグ", "tags"],
+    "image_name": ["画像ファイル名", "アイキャッチファイル名", "画像名"],
+    "alt": ["画像alt", "アイキャッチalt", "代替テキスト", "alt"],
+}
+
+IMAGE_EXTENSIONS = [".webp", ".jpg", ".jpeg", ".png"]
+
+
+# --------------------------------------------------------------------------- #
+# ユーティリティ
+# --------------------------------------------------------------------------- #
 def env_required(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise RuntimeError(f"Environment variable {name} is required.")
+        raise RuntimeError(f"環境変数 {name} が未設定です。GitHub Secrets を確認してください。")
     return value
 
 
@@ -37,36 +71,53 @@ def normalize_url(url: str) -> str:
 
 
 def basic_auth_header(username: str, app_password: str) -> dict[str, str]:
+    # アプリケーションパスワードのスペースは WordPress が無視するため除去しておく
+    app_password = app_password.replace(" ", "")
     token = base64.b64encode(f"{username}:{app_password}".encode("utf-8")).decode("ascii")
     return {"Authorization": f"Basic {token}"}
 
 
 def safe_str(value: Any) -> str:
-    if pd.isna(value):
+    if value is None:
         return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
     return str(value).strip()
 
 
 def find_col(columns: list[str], candidates: list[str]) -> str | None:
-    columns_map = {str(c).strip().lower(): c for c in columns}
-    for candidate in candidates:
-        key = candidate.strip().lower()
-        if key in columns_map:
-            return columns_map[key]
+    """完全一致（大文字小文字無視）を最優先し、無ければ部分一致で探す。"""
+    norm = {str(c).strip().lower(): c for c in columns}
+    # 1) 完全一致
+    for cand in candidates:
+        key = cand.strip().lower()
+        if key in norm:
+            return norm[key]
+    # 2) 部分一致（列名のブレ対策）
+    for cand in candidates:
+        key = cand.strip().lower()
+        for col_key, original in norm.items():
+            if key in col_key or col_key in key:
+                return original
     return None
 
 
 def read_table(path: Path, sheet: str | None) -> pd.DataFrame:
     if not path.exists():
-        raise FileNotFoundError(f"Input file not found: {path}")
+        raise FileNotFoundError(f"入力ファイルが見つかりません: {path}")
 
     suffix = path.suffix.lower()
-    if suffix in [".xlsx", ".xlsm", ".xls"]:
-        df = pd.read_excel(path, sheet_name=sheet or 0)
+    if suffix in (".xlsx", ".xlsm", ".xls"):
+        df = pd.read_excel(path, sheet_name=sheet or 0, dtype=object)
     elif suffix == ".csv":
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, dtype=object)
     else:
-        raise ValueError("Input must be .xlsx, .xlsm, .xls, or .csv")
+        raise ValueError("入力は .xlsx / .xlsm / .xls / .csv のいずれかにしてください。")
 
     df = df.dropna(how="all")
     df.columns = [str(c).strip() for c in df.columns]
@@ -74,16 +125,16 @@ def read_table(path: Path, sheet: str | None) -> pd.DataFrame:
 
 
 def first_existing(paths: list[Path]) -> Path | None:
-    for path in paths:
-        if path.exists() and path.is_file():
-            return path
+    for p in paths:
+        if p.exists() and p.is_file():
+            return p
     return None
 
 
 def split_terms(value: str) -> list[str]:
     if not value:
         return []
-    parts = re.split(r"[,、\n/|]+", value)
+    parts = re.split(r"[,、\n/|｜]+", value)
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -91,14 +142,6 @@ def make_slug(text: str, fallback: str) -> str:
     value = slugify(text or fallback, lowercase=True)
     value = value[:90].strip("-")
     return value or fallback
-
-
-def markdown_to_html(md_text: str) -> str:
-    return markdown.markdown(
-        md_text,
-        extensions=["extra", "tables", "sane_lists", "toc"],
-        output_format="html5",
-    )
 
 
 def row_no_to_names(no_value: str) -> list[str]:
@@ -112,6 +155,28 @@ def row_no_to_names(no_value: str) -> list[str]:
         return [raw]
 
 
+def markdown_to_html(md_text: str, *, strip_h1: bool, title: str) -> str:
+    """Markdown -> HTML。strip_h1=True なら本文先頭の単一 H1 を除去（タイトル二重表示防止）。"""
+    text = md_text.lstrip("﻿").lstrip()
+    if strip_h1:
+        lines = text.split("\n")
+        if lines and lines[0].startswith("# "):
+            heading = lines[0][2:].strip()
+            # 先頭 H1 がタイトルと同等、またはタイトル未指定なら除去する
+            if not title or heading == title.strip() or _normalize(heading) == _normalize(title):
+                lines = lines[1:]
+            text = "\n".join(lines).lstrip()
+    return markdown.markdown(
+        text,
+        extensions=["extra", "tables", "sane_lists", "toc"],
+        output_format="html5",
+    )
+
+
+def _normalize(s: str) -> str:
+    return re.sub(r"\s+", "", s or "").lower()
+
+
 def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | None:
     candidates: list[Path] = []
     if slug:
@@ -121,75 +186,128 @@ def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | No
     return first_existing(candidates)
 
 
-def find_image_file(images_dir: Path, slug: str, no_value: str) -> Path | None:
-    extensions = [".webp", ".jpg", ".jpeg", ".png"]
+def find_image_file(images_dir: Path, slug: str, no_value: str, image_name: str) -> Path | None:
     candidates: list[Path] = []
+    # 0) 管理表に明示された画像ファイル名を最優先
+    if image_name:
+        candidates.append(images_dir / image_name)
+        stem = Path(image_name).stem
+        candidates += [images_dir / f"{stem}{ext}" for ext in IMAGE_EXTENSIONS]
+    # 1) slug 起点
     if slug:
-        candidates += [images_dir / f"{slug}{ext}" for ext in extensions]
+        candidates += [images_dir / f"{slug}{ext}" for ext in IMAGE_EXTENSIONS]
+    # 2) No 起点（3桁ゼロ埋め / 素の No）
     for name in row_no_to_names(no_value):
-        candidates += [images_dir / f"{name}{ext}" for ext in extensions]
+        candidates += [images_dir / f"{name}{ext}" for ext in IMAGE_EXTENSIONS]
     return first_existing(candidates)
 
 
+def extract_api_error(response: requests.Response) -> str:
+    """WordPress REST API のエラーJSONから code/message を読みやすく抽出する。"""
+    try:
+        data = response.json()
+        code = data.get("code", "")
+        message = data.get("message", "")
+        if message:
+            return f"{response.status_code} {code}: {message}".strip()
+    except ValueError:
+        pass
+    return f"{response.status_code}: {response.text[:500]}"
+
+
+# --------------------------------------------------------------------------- #
+# WordPress クライアント
+# --------------------------------------------------------------------------- #
 class WordPressClient:
     def __init__(self, base_url: str, username: str, app_password: str) -> None:
         self.base_url = normalize_url(base_url)
         self.api_base = f"{self.base_url}/wp-json/wp/v2"
         self.session = requests.Session()
         self.session.headers.update(basic_auth_header(username, app_password))
-        self.session.headers.update({"User-Agent": "GitHub-Actions-WP-Auto-Post/1.0"})
+        self.session.headers.update({"User-Agent": "GitHub-Actions-WP-Auto-Post/2.0"})
+
+        retry = Retry(
+            total=4,
+            backoff_factor=2,  # 2s, 4s, 8s, ...
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
+        self._term_cache: dict[tuple[str, str], int] = {}
 
     def request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
         url = f"{self.api_base}/{endpoint.lstrip('/')}"
-        response = self.session.request(method, url, timeout=90, **kwargs)
+        kwargs.setdefault("timeout", 90)
+        response = self.session.request(method, url, **kwargs)
         if response.status_code >= 400:
-            raise RuntimeError(f"WordPress API error {response.status_code}: {response.text[:1200]}")
+            raise RuntimeError(f"WordPress API エラー {extract_api_error(response)}")
         if not response.text:
             return None
         return response.json()
+
+    def verify_auth(self) -> str:
+        """認証確認。失敗時は分かりやすい例外を投げる。"""
+        me = self.request("GET", "users/me", params={"context": "edit"})
+        return me.get("name") or me.get("slug") or "(unknown)"
 
     def find_or_create_term(self, taxonomy: str, name: str) -> int:
         name = name.strip()
         if not name:
             return 0
+        cache_key = (taxonomy, name.lower())
+        if cache_key in self._term_cache:
+            return self._term_cache[cache_key]
 
         endpoint = "categories" if taxonomy == "category" else "tags"
         data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
+        term_id = 0
+        for item in data or []:
+            if safe_str(item.get("name")).lower() == name.lower():
+                term_id = int(item["id"])
+                break
+        if not term_id:
+            created = self.request("POST", endpoint, json={"name": name})
+            term_id = int(created["id"])
 
-        for item in data:
-            if item.get("name", "").strip().lower() == name.lower():
-                return int(item["id"])
+        self._term_cache[cache_key] = term_id
+        return term_id
 
-        created = self.request("POST", endpoint, json={"name": name})
-        return int(created["id"])
+    def find_post_by_slug(self, slug: str, status: str) -> dict[str, Any] | None:
+        if not slug:
+            return None
+        # draft/pending を検索するには context=edit と全 status 指定が必要
+        params = {
+            "slug": slug,
+            "status": "publish,future,draft,pending,private",
+            "context": "edit",
+            "per_page": 10,
+        }
+        data = self.request("GET", "posts", params=params)
+        if data:
+            return data[0]
+        return None
 
     def upload_media(self, image_path: Path, alt_text: str = "") -> int:
         mime_type, _ = mimetypes.guess_type(str(image_path))
         if not mime_type:
             mime_type = "application/octet-stream"
-
         headers = {
             "Content-Disposition": f'attachment; filename="{image_path.name}"',
             "Content-Type": mime_type,
         }
-
         with image_path.open("rb") as f:
             response = self.session.post(
-                f"{self.api_base}/media",
-                headers=headers,
-                data=f,
-                timeout=180,
+                f"{self.api_base}/media", headers=headers, data=f, timeout=300
             )
-
         if response.status_code >= 400:
-            raise RuntimeError(f"Media upload error {response.status_code}: {response.text[:1200]}")
-
-        media = response.json()
-        media_id = int(media["id"])
-
+            raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
+        media_id = int(response.json()["id"])
         if alt_text:
             self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
-
         return media_id
 
     def create_post(
@@ -203,6 +321,7 @@ class WordPressClient:
         category_ids: list[int],
         tag_ids: list[int],
         featured_media: int | None,
+        post_id: int | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "title": title,
@@ -217,76 +336,97 @@ class WordPressClient:
             payload["tags"] = tag_ids
         if featured_media:
             payload["featured_media"] = featured_media
+        endpoint = f"posts/{post_id}" if post_id else "posts"
+        return self.request("POST", endpoint, json=payload)
 
-        return self.request("POST", "posts", json=payload)
 
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input", required=True, help="Path to XLSX or CSV production sheet")
-    parser.add_argument("--sheet", default=None, help="Excel sheet name")
+# --------------------------------------------------------------------------- #
+# メイン
+# --------------------------------------------------------------------------- #
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="WordPress 自動投稿スクリプト")
+    parser.add_argument("--input", required=True, help="制作管理表（XLSX/CSV）のパス")
+    parser.add_argument("--sheet", default=None, help="Excel シート名")
     parser.add_argument("--articles-dir", default="articles")
     parser.add_argument("--images-dir", default="eyecatches")
     parser.add_argument("--post-status", default="draft", choices=["draft", "pending", "publish"])
-    parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--limit", type=int, default=0, help="投稿件数。0 で全件")
+    parser.add_argument("--dry-run", action="store_true", help="投稿せず確認だけ行う")
+    parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
+    parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
+    parser.add_argument(
+        "--allow-duplicate",
+        action="store_true",
+        help="同一 slug の既存投稿があっても上書き更新する（既定はスキップ）",
+    )
+    parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    limit = None if args.limit is None or args.limit <= 0 else args.limit
 
     input_path = Path(args.input)
     articles_dir = Path(args.articles_dir)
     images_dir = Path(args.images_dir)
 
     df = read_table(input_path, args.sheet)
+    cols = df.columns.tolist()
+    col = {key: find_col(cols, cands) for key, cands in COLUMN_CANDIDATES.items()}
 
-    no_col = find_col(df.columns.tolist(), ["No", "番号", "記事No", "ID"])
-    kw_col = find_col(df.columns.tolist(), ["KW", "キーワード", "親KW", "指定KW", "管理KW"])
-    title_col = find_col(df.columns.tolist(), ["記事タイトル案", "タイトル", "記事タイトル", "H1", "title"])
-    slug_col = find_col(df.columns.tolist(), ["スラッグ", "slug", "Slug"])
-    meta_col = find_col(df.columns.tolist(), ["メタディスクリプション案", "メタディスクリプション", "description", "概要"])
-    cat_col = find_col(df.columns.tolist(), ["WPカテゴリ", "カテゴリ", "記事カテゴリ", "category"])
-    tag_col = find_col(df.columns.tolist(), ["タグ", "WPタグ", "tags"])
-    alt_col = find_col(df.columns.tolist(), ["alt", "画像alt", "アイキャッチalt", "代替テキスト"])
+    print("=== 列マッピング結果 ===")
+    for key, name in col.items():
+        print(f"  {key:10s} -> {name}")
+    print(f"  対象行数: {len(df)}  / モード: {'DRY-RUN' if args.dry_run else 'POST'}  / status: {args.post_status}")
 
-    if kw_col is None and title_col is None:
-        raise RuntimeError("KW or title column is required.")
+    if col["kw"] is None and col["title"] is None:
+        raise RuntimeError("KW 列・タイトル列のどちらも見つかりません。管理表の列名を確認してください。")
 
+    wp: WordPressClient | None = None
     if not args.dry_run:
         wp = WordPressClient(
             env_required("WP_BASE_URL"),
             env_required("WP_USERNAME"),
             env_required("WP_APP_PASSWORD"),
         )
-    else:
-        wp = None
+        try:
+            user = wp.verify_auth()
+            print(f"  認証OK: {user} としてログイン")
+        except Exception as exc:
+            raise RuntimeError(
+                f"WordPress 認証に失敗しました。WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を確認してください: {exc}"
+            )
 
     results: list[dict[str, Any]] = []
     processed = 0
 
     for idx, row in df.iterrows():
-        if args.limit is not None and processed >= args.limit:
+        if limit is not None and processed >= limit:
             break
 
-        no_value = safe_str(row.get(no_col, idx + 1)) if no_col else str(idx + 1)
-        kw = safe_str(row.get(kw_col, "")) if kw_col else ""
-        title = safe_str(row.get(title_col, "")) if title_col else ""
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(idx + 1)
+        if not no_value:
+            no_value = str(idx + 1)
+        kw = safe_str(row.get(col["kw"])) if col["kw"] else ""
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
         if not title:
             title = kw
-
         if not title:
-            continue
+            continue  # タイトルも KW も無い行はスキップ（空行対策）
 
-        explicit_slug = safe_str(row.get(slug_col, "")) if slug_col else ""
-        slug = make_slug(explicit_slug or title, f"post-{idx+1:03d}")
-        excerpt = safe_str(row.get(meta_col, "")) if meta_col else ""
-
-        category_names = split_terms(safe_str(row.get(cat_col, "")) if cat_col else "")
-        tag_names = split_terms(safe_str(row.get(tag_col, "")) if tag_col else "")
-        alt_text = safe_str(row.get(alt_col, "")) if alt_col else ""
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
+        category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
+        tag_names = split_terms(safe_str(row.get(col["tag"])) if col["tag"] else "")
+        image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
+        alt_text = safe_str(row.get(col["alt"])) if col["alt"] else ""
         if not alt_text:
             alt_text = f"{title}のアイキャッチ画像"
 
-        article_path = find_article_file(articles_dir, slug, no_value)
-        image_path = find_image_file(images_dir, slug, no_value)
+        article_path = find_article_file(articles_dir, explicit_slug, no_value)
+        image_path = find_image_file(images_dir, explicit_slug, no_value, image_name)
 
         result: dict[str, Any] = {
             "no": no_value,
@@ -294,7 +434,7 @@ def main() -> int:
             "title": title,
             "slug": slug,
             "article_file": str(article_path) if article_path else "",
-            "image_file": str(image_path) if image_path else "",
+            "image_file": str(image_path) if image_path else "（画像なし）",
             "status": "",
             "post_id": "",
             "post_link": "",
@@ -303,28 +443,41 @@ def main() -> int:
 
         if article_path is None:
             result["status"] = "skipped"
-            result["message"] = "Article markdown file not found."
+            result["message"] = "本文 Markdown が見つかりません。"
             results.append(result)
+            print(f"[SKIP] No.{no_value} {title} -> 本文なし")
             continue
 
         md_text = article_path.read_text(encoding="utf-8")
-        content_html = markdown_to_html(md_text)
+        content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
 
         if args.dry_run:
             result["status"] = "dry-run"
-            result["message"] = "Ready to post."
+            img_note = "画像あり" if image_path else "画像なし"
+            cat = "/".join(category_names) or "-"
+            tag = "/".join(tag_names) or "-"
+            result["message"] = f"投稿準備OK（{img_note} / cat:{cat} / tag:{tag}）"
             results.append(result)
             processed += 1
-            print(f"[DRY-RUN] {no_value}: {title}")
+            print(f"[DRY-RUN] No.{no_value} {title} -> {result['message']}")
             continue
 
         try:
             assert wp is not None
-            category_ids = [wp.find_or_create_term("category", name) for name in category_names]
-            category_ids = [term_id for term_id in category_ids if term_id]
 
-            tag_ids = [wp.find_or_create_term("tag", name) for name in tag_names]
-            tag_ids = [term_id for term_id in tag_ids if term_id]
+            existing = None if args.allow_duplicate else wp.find_post_by_slug(slug, args.post_status)
+            if existing:
+                result["status"] = "skipped"
+                result["post_id"] = existing.get("id", "")
+                result["post_link"] = existing.get("link", "")
+                result["message"] = "同一 slug の投稿が既に存在するためスキップ（--allow-duplicate で上書き可）"
+                results.append(result)
+                processed += 1
+                print(f"[SKIP] No.{no_value} {title} -> 既存 slug: {slug}")
+                continue
+
+            category_ids = [i for i in (wp.find_or_create_term("category", n) for n in category_names) if i]
+            tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
 
             featured_media: int | None = None
             if image_path:
@@ -344,22 +497,43 @@ def main() -> int:
             result["status"] = "posted"
             result["post_id"] = created.get("id", "")
             result["post_link"] = created.get("link", "")
-            result["message"] = "Posted successfully."
-            print(f"[POSTED] {no_value}: {title} -> {result['post_link']}")
+            note = "（画像なし）" if not image_path else ""
+            result["message"] = f"投稿成功 {note}".strip()
+            print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
 
         except Exception as exc:
             result["status"] = "error"
             result["message"] = str(exc)
-            print(f"[ERROR] {no_value}: {title} -> {exc}")
+            print(f"[ERROR] No.{no_value} {title} -> {exc}")
 
         results.append(result)
         processed += 1
+        if args.sleep > 0:
+            time.sleep(args.sleep)
 
+    # 結果 CSV
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    result_path = Path(f"results_{timestamp}.csv")
-    pd.DataFrame(results).to_csv(result_path, index=False, encoding="utf-8-sig")
-    print(f"Result CSV: {result_path}")
+    result_path = output_dir / f"results_{timestamp}.csv"
+    pd.DataFrame(
+        results,
+        columns=[
+            "no", "kw", "title", "slug", "article_file", "image_file",
+            "status", "post_id", "post_link", "message",
+        ],
+    ).to_csv(result_path, index=False, encoding="utf-8-sig")
 
+    # サマリ
+    summary: dict[str, int] = {}
+    for r in results:
+        summary[r["status"]] = summary.get(r["status"], 0) + 1
+    print("=== 実行サマリ ===")
+    for status, count in sorted(summary.items()):
+        print(f"  {status}: {count}")
+    print(f"結果CSV: {result_path}")
+
+    # error があっても全体は完了扱い（CSV で追跡）。ただし戻り値で検知できるようにする。
     return 0
 
 
