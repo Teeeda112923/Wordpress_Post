@@ -165,11 +165,7 @@ def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
     """
     text = md_text.lstrip("﻿").lstrip()
     if strip_h1:
-        lines = text.split("\n")
-        # 先頭の単一行 H1（"# 見出し"）。"##" 以降は対象外。
-        if lines and re.match(r"^#\s+\S", lines[0]) and not lines[0].lstrip().startswith("##"):
-            lines = lines[1:]
-        text = "\n".join(lines).lstrip()
+        text = strip_leading_markdown_h1(text)
 
     html = markdown.markdown(
         text,
@@ -182,17 +178,62 @@ def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
     return html
 
 
-def strip_leading_html_h1(html: str) -> str:
-    """HTML 本文の先頭付近にある最初の <h1>...</h1> を1つだけ除去する。
+def strip_leading_markdown_h1(text: str) -> str:
+    """本文の最初の見出しが H1（"# ..."）ならその行を削除する。
 
-    Markdown ではなく HTML を直接本文として持つケースに対応。先頭の空白や
-    コメント等を読み飛ばし、最初に現れる要素が h1 のときだけ削除する。
+    YAML フロントマター（先頭の --- ... ---）や空行・コメントを読み飛ばし、
+    最初に現れる「実体のある行」が H1 のときだけ削除する。setext 形式
+    （見出しの次行が === ）の H1 にも対応する。"##" 以降は対象外。
     """
-    # 先頭の空白・HTMLコメントをスキップした位置から最初のタグを見る
-    m = re.match(r"^\s*(?:<!--.*?-->\s*)*<h1\b[^>]*>.*?</h1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
-    if m:
-        return html[m.end():].lstrip()
-    return html
+    lines = text.split("\n")
+    n = len(lines)
+
+    # 先頭の YAML フロントマター（--- ... ---）は丸ごと除去する
+    if n and lines[0].strip() == "---":
+        j = 1
+        while j < n and lines[j].strip() != "---":
+            j += 1
+        if j < n:  # 閉じ --- が見つかった場合のみ除去
+            del lines[: j + 1]
+            n = len(lines)
+
+    i = 0
+    # 空行・HTMLコメント行を読み飛ばし、最初の実体行を探す
+    while i < n and (lines[i].strip() == "" or lines[i].lstrip().startswith("<!--")):
+        i += 1
+
+    if i >= n:
+        return text
+
+    first = lines[i]
+    # ATX 形式: "# 見出し"（"##" は除外）
+    if re.match(r"^#\s+\S", first) and not first.lstrip().startswith("##"):
+        del lines[i]
+        return "\n".join(lines).lstrip("\n")
+
+    # setext 形式: 見出しテキストの次行が "===..."（H1）
+    if i + 1 < n and re.match(r"^=+\s*$", lines[i + 1]) and first.strip():
+        del lines[i : i + 2]
+        return "\n".join(lines).lstrip("\n")
+
+    return text
+
+
+def strip_leading_html_h1(html: str) -> str:
+    """HTML 本文の最初の <h1>...</h1> を1つだけ除去する（最初の <h2> より前のもの）。
+
+    HTML を直接本文に持つケースや、フロントマター/hr 等で先頭判定を逃した
+    Markdown 変換結果に対応する。タイトル二重表示の原因となる本文冒頭の H1 は
+    必ず最初の H2（節見出し）より前に現れるため、その範囲にある最初の H1 だけを
+    削除する。本文後半に意図的に置かれた H1 は残す。
+    """
+    h1 = re.search(r"<h1\b[^>]*>.*?</h1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
+    if not h1:
+        return html
+    h2 = re.search(r"<h2\b", html, flags=re.IGNORECASE)
+    if h2 and h1.start() > h2.start():
+        return html  # 最初の H1 が最初の H2 より後ろなら本文見出しとみなし残す
+    return (html[: h1.start()] + html[h1.end():]).lstrip()
 
 
 def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | None:
