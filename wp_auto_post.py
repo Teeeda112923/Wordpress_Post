@@ -263,6 +263,12 @@ def find_image_file(images_dir: Path, slug: str, no_value: str, image_name: str)
 
 def extract_api_error(response: requests.Response) -> str:
     """WordPress REST API のエラーJSONから code/message を読みやすく抽出する。"""
+    if response.status_code == 415:
+        return (
+            "415 Unsupported Media Type が返っています。WordPressではなく、"
+            "openresty/nginx/WAF側でREST APIリクエストが拒否されている可能性があります。"
+            "WP_BASE_URL、REST API制限、セキュリティプラグイン、Basic認証の許可設定を確認してください。"
+        )
     try:
         data = response.json()
         code = data.get("code", "")
@@ -366,7 +372,11 @@ class WordPressClient:
         self.api_base = f"{self.base_url}/wp-json/wp/v2"
         self.session = requests.Session()
         self.session.headers.update(basic_auth_header(username, app_password))
-        self.session.headers.update({"User-Agent": "GitHub-Actions-WP-Auto-Post/2.0"})
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 WordPress-Auto-Post/2.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+        })
 
         retry = Retry(
             total=4,
@@ -393,7 +403,7 @@ class WordPressClient:
 
     def verify_auth(self) -> str:
         """認証確認。失敗時は分かりやすい例外を投げる。"""
-        me = self.request("GET", "users/me", params={"context": "edit"})
+        me = self.request("GET", "users/me")
         return me.get("name") or me.get("slug") or "(unknown)"
 
     def find_or_create_term(self, taxonomy: str, name: str) -> int:
