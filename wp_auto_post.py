@@ -51,6 +51,7 @@ COLUMN_CANDIDATES: dict[str, list[str]] = {
     "tag": ["タグ案", "タグ", "WPタグ", "tags"],
     "image_name": ["画像ファイル名", "アイキャッチファイル名", "画像名"],
     "alt": ["画像alt", "アイキャッチalt", "代替テキスト", "alt"],
+    "char_target": ["文字数目安", "目標文字数", "文字数", "想定文字数"],
 }
 
 IMAGE_EXTENSIONS = [".webp", ".jpg", ".jpeg", ".png"]
@@ -236,6 +237,36 @@ def strip_leading_html_h1(html: str) -> str:
     return (html[: h1.start()] + html[h1.end():]).lstrip()
 
 
+def count_text_chars(html: str) -> int:
+    """HTML 本文から本文テキストの文字数を数える（タグ除去・空白除外）。"""
+    text = re.sub(r"<[^>]+>", "", html)          # タグ除去
+    text = re.sub(r"&[a-zA-Z#0-9]+;", "", text)  # HTMLエンティティ除去
+    text = re.sub(r"\s+", "", text)              # 空白・改行を除外
+    return len(text)
+
+
+def parse_char_target(target: str) -> tuple[int | None, int | None]:
+    """「4,500〜6,500字」「3000字以上」等から (min, max) を取り出す。無ければ (None, None)。"""
+    nums = [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", target or "")]
+    if not nums:
+        return None, None
+    if len(nums) == 1:
+        return nums[0], None
+    return min(nums), max(nums)
+
+
+def judge_char_count(actual: int, target: str) -> str:
+    """文字数実績を目安レンジと比較して判定文字列を返す。目安が無ければ空。"""
+    lo, hi = parse_char_target(target)
+    if lo is None and hi is None:
+        return ""
+    if lo is not None and actual < lo:
+        return f"不足(目安{target})"
+    if hi is not None and actual > hi:
+        return f"超過(目安{target})"
+    return "OK"
+
+
 def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | None:
     candidates: list[Path] = []
     if slug:
@@ -263,6 +294,12 @@ def find_image_file(images_dir: Path, slug: str, no_value: str, image_name: str)
 
 def extract_api_error(response: requests.Response) -> str:
     """WordPress REST API のエラーJSONから code/message を読みやすく抽出する。"""
+    if response.status_code == 415:
+        return (
+            "415 Unsupported Media Type が返っています。WordPressではなく、"
+            "openresty/nginx/WAF側でREST APIリクエストが拒否されている可能性があります。"
+            "WP_BASE_URL、REST API制限、セキュリティプラグイン、Basic認証の許可設定を確認してください。"
+        )
     try:
         data = response.json()
         code = data.get("code", "")
@@ -277,13 +314,19 @@ def extract_api_error(response: requests.Response) -> str:
 # --------------------------------------------------------------------------- #
 # Excel への結果書き戻し（--update-excel 指定時のみ）
 # --------------------------------------------------------------------------- #
-# 結果キー -> Excel 列名（無ければ末尾に新規追加）
-EXCEL_RESULT_COLUMNS: list[tuple[str, str]] = [
-    ("status", "投稿ステータス"),
-    ("post_id", "投稿ID"),
-    ("post_link", "投稿URL"),
-    ("posted_at", "投稿日時"),
-    ("message", "エラーメッセージ"),
+# 結果キー -> (Excel 列名, 書き込みポリシー)。無ければ末尾に新規追加。
+#   overwrite     : 毎回（空でも）上書き。最新状態を反映する列
+#   keep_if_empty : 値が空のときは既存セルを保持。日時やIDの蓄積に使う列
+EXCEL_RESULT_COLUMNS: list[tuple[str, str, str]] = [
+    ("status", "投稿ステータス", "overwrite"),
+    ("post_id", "WP投稿ID", "keep_if_empty"),
+    ("post_link", "WP投稿URL", "keep_if_empty"),
+    ("posted_at", "最終投稿日時", "keep_if_empty"),
+    ("updated_at", "最終更新日時", "keep_if_empty"),
+    ("run_mode", "最終実行モード", "overwrite"),
+    ("error_content", "エラー内容", "overwrite"),
+    ("char_count", "文字数実績", "keep_if_empty"),
+    ("char_judge", "文字数判定", "keep_if_empty"),
 ]
 
 
@@ -329,7 +372,7 @@ def update_excel_results(input_path: Path, sheet: str | None, results: list[dict
     # 出力列の列番号を決定（無ければ末尾に追加）
     next_col = (max(header.values()) if header else 0) + 1
     target_cols: dict[str, int] = {}
-    for key, col_name in EXCEL_RESULT_COLUMNS:
+    for key, col_name, _policy in EXCEL_RESULT_COLUMNS:
         if col_name in header:
             target_cols[key] = header[col_name]
         else:
@@ -349,8 +392,15 @@ def update_excel_results(input_path: Path, sheet: str | None, results: list[dict
         row = row_by_no.get(_norm_no(result.get("no")))
         if not row:
             continue
-        for key, _ in EXCEL_RESULT_COLUMNS:
-            ws.cell(row=row, column=target_cols[key], value=result.get(key, "") or "")
+        # エラー内容はエラー/スキップ時のみ記録（成功時は空にして過去のエラーを消す）
+        error_content = result.get("message", "") if result.get("status") in ("error", "skipped") else ""
+        values = {**result, "error_content": error_content}
+        for key, _col_name, policy in EXCEL_RESULT_COLUMNS:
+            val = values.get(key, "")
+            cell = ws.cell(row=row, column=target_cols[key])
+            if policy == "keep_if_empty" and (val is None or val == ""):
+                continue  # 空なら既存セルを保持（日時・ID などを蓄積）
+            cell.value = val if val not in (None,) else ""
         updated += 1
 
     wb.save(input_path)
@@ -366,7 +416,11 @@ class WordPressClient:
         self.api_base = f"{self.base_url}/wp-json/wp/v2"
         self.session = requests.Session()
         self.session.headers.update(basic_auth_header(username, app_password))
-        self.session.headers.update({"User-Agent": "GitHub-Actions-WP-Auto-Post/2.0"})
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 WordPress-Auto-Post/2.0",
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+        })
 
         retry = Retry(
             total=4,
@@ -393,7 +447,7 @@ class WordPressClient:
 
     def verify_auth(self) -> str:
         """認証確認。失敗時は分かりやすい例外を投げる。"""
-        me = self.request("GET", "users/me", params={"context": "edit"})
+        me = self.request("GET", "users/me")
         return me.get("name") or me.get("slug") or "(unknown)"
 
     def find_or_create_term(self, taxonomy: str, name: str) -> int:
@@ -603,6 +657,7 @@ def main() -> int:
         article_path = find_article_file(articles_dir, explicit_slug, no_value)
         image_path = find_image_file(images_dir, explicit_slug, no_value, image_name)
 
+        run_mode = f"{'dry-run' if args.dry_run else 'post'}/{write_mode}"
         result: dict[str, Any] = {
             "no": no_value,
             "kw": kw,
@@ -614,6 +669,10 @@ def main() -> int:
             "post_id": "",
             "post_link": "",
             "posted_at": "",
+            "updated_at": "",
+            "run_mode": run_mode,
+            "char_count": "",
+            "char_judge": "",
             "message": "",
         }
 
@@ -627,6 +686,11 @@ def main() -> int:
         md_text = article_path.read_text(encoding="utf-8")
         content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
         img_note = "画像あり" if image_path else "画像なし"
+
+        # 文字数実績と判定（本文があれば dry-run でも算出）
+        char_target = safe_str(row.get(col["char_target"])) if col["char_target"] else ""
+        result["char_count"] = count_text_chars(content_html)
+        result["char_judge"] = judge_char_count(result["char_count"], char_target)
 
         # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
         existing = wp.find_post_by_slug(slug, args.post_status) if wp else None
@@ -697,16 +761,18 @@ def main() -> int:
                 post_id=post_id_to_update,
             )
 
+            now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             result["post_id"] = created.get("id", "")
             result["post_link"] = created.get("link", "")
-            result["posted_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             note = "（画像なし）" if not image_path else ""
             if post_id_to_update:
                 result["status"] = "updated"
+                result["updated_at"] = now_str
                 result["message"] = f"既存投稿を更新しました {note}".strip()
                 print(f"[UPDATED] No.{no_value} {title} -> {result['post_link']} {note}")
             else:
                 result["status"] = "posted"
+                result["posted_at"] = now_str
                 result["message"] = f"新規投稿しました {note}".strip()
                 print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
 
@@ -729,7 +795,8 @@ def main() -> int:
         results,
         columns=[
             "no", "kw", "title", "slug", "article_file", "image_file",
-            "status", "post_id", "post_link", "posted_at", "message",
+            "status", "post_id", "post_link", "posted_at", "updated_at",
+            "run_mode", "char_count", "char_judge", "message",
         ],
     ).to_csv(result_path, index=False, encoding="utf-8-sig")
 
