@@ -155,26 +155,85 @@ def row_no_to_names(no_value: str) -> list[str]:
         return [raw]
 
 
-def markdown_to_html(md_text: str, *, strip_h1: bool, title: str) -> str:
-    """Markdown -> HTML。strip_h1=True なら本文先頭の単一 H1 を除去（タイトル二重表示防止）。"""
+def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
+    """Markdown -> HTML。strip_h1=True なら本文先頭の H1 を無条件で除去する。
+
+    WordPress テーマ側が投稿タイトルを表示するため、本文先頭の H1 はタイトルと
+    一致していなくても二重表示になる。よって先頭 H1（Markdown の `# ...`）は
+    内容に関わらず削除する。本文中の `##` 以降（H2/H3...）は残す。
+    title 引数は後方互換のため残しているが判定には使用しない。
+    """
     text = md_text.lstrip("﻿").lstrip()
     if strip_h1:
-        lines = text.split("\n")
-        if lines and lines[0].startswith("# "):
-            heading = lines[0][2:].strip()
-            # 先頭 H1 がタイトルと同等、またはタイトル未指定なら除去する
-            if not title or heading == title.strip() or _normalize(heading) == _normalize(title):
-                lines = lines[1:]
-            text = "\n".join(lines).lstrip()
-    return markdown.markdown(
+        text = strip_leading_markdown_h1(text)
+
+    html = markdown.markdown(
         text,
         extensions=["extra", "tables", "sane_lists", "toc"],
         output_format="html5",
     )
 
+    if strip_h1:
+        html = strip_leading_html_h1(html)
+    return html
 
-def _normalize(s: str) -> str:
-    return re.sub(r"\s+", "", s or "").lower()
+
+def strip_leading_markdown_h1(text: str) -> str:
+    """本文の最初の見出しが H1（"# ..."）ならその行を削除する。
+
+    YAML フロントマター（先頭の --- ... ---）や空行・コメントを読み飛ばし、
+    最初に現れる「実体のある行」が H1 のときだけ削除する。setext 形式
+    （見出しの次行が === ）の H1 にも対応する。"##" 以降は対象外。
+    """
+    lines = text.split("\n")
+    n = len(lines)
+
+    # 先頭の YAML フロントマター（--- ... ---）は丸ごと除去する
+    if n and lines[0].strip() == "---":
+        j = 1
+        while j < n and lines[j].strip() != "---":
+            j += 1
+        if j < n:  # 閉じ --- が見つかった場合のみ除去
+            del lines[: j + 1]
+            n = len(lines)
+
+    i = 0
+    # 空行・HTMLコメント行を読み飛ばし、最初の実体行を探す
+    while i < n and (lines[i].strip() == "" or lines[i].lstrip().startswith("<!--")):
+        i += 1
+
+    if i >= n:
+        return text
+
+    first = lines[i]
+    # ATX 形式: "# 見出し"（"##" は除外）
+    if re.match(r"^#\s+\S", first) and not first.lstrip().startswith("##"):
+        del lines[i]
+        return "\n".join(lines).lstrip("\n")
+
+    # setext 形式: 見出しテキストの次行が "===..."（H1）
+    if i + 1 < n and re.match(r"^=+\s*$", lines[i + 1]) and first.strip():
+        del lines[i : i + 2]
+        return "\n".join(lines).lstrip("\n")
+
+    return text
+
+
+def strip_leading_html_h1(html: str) -> str:
+    """HTML 本文の最初の <h1>...</h1> を1つだけ除去する（最初の <h2> より前のもの）。
+
+    HTML を直接本文に持つケースや、フロントマター/hr 等で先頭判定を逃した
+    Markdown 変換結果に対応する。タイトル二重表示の原因となる本文冒頭の H1 は
+    必ず最初の H2（節見出し）より前に現れるため、その範囲にある最初の H1 だけを
+    削除する。本文後半に意図的に置かれた H1 は残す。
+    """
+    h1 = re.search(r"<h1\b[^>]*>.*?</h1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
+    if not h1:
+        return html
+    h2 = re.search(r"<h2\b", html, flags=re.IGNORECASE)
+    if h2 and h1.start() > h2.start():
+        return html  # 最初の H1 が最初の H2 より後ろなら本文見出しとみなし残す
+    return (html[: h1.start()] + html[h1.end():]).lstrip()
 
 
 def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | None:
@@ -213,6 +272,89 @@ def extract_api_error(response: requests.Response) -> str:
     except ValueError:
         pass
     return f"{response.status_code}: {response.text[:500]}"
+
+
+# --------------------------------------------------------------------------- #
+# Excel への結果書き戻し（--update-excel 指定時のみ）
+# --------------------------------------------------------------------------- #
+# 結果キー -> Excel 列名（無ければ末尾に新規追加）
+EXCEL_RESULT_COLUMNS: list[tuple[str, str]] = [
+    ("status", "投稿ステータス"),
+    ("post_id", "投稿ID"),
+    ("post_link", "投稿URL"),
+    ("posted_at", "投稿日時"),
+    ("message", "エラーメッセージ"),
+]
+
+
+def _norm_no(value: Any) -> str:
+    """No 値を比較用に正規化する（1 / 1.0 / '001' を同一視）。"""
+    s = safe_str(value)
+    if not s:
+        return ""
+    try:
+        return str(int(float(s)))
+    except ValueError:
+        return s.lower()
+
+
+def update_excel_results(input_path: Path, sheet: str | None, results: list[dict[str, Any]]) -> int:
+    """入力 Excel の該当シートへ投稿結果を No 一致で書き戻す。
+
+    他シートや書式を壊さないよう openpyxl で既存ブックを直接更新する。
+    既存の同名列があれば上書き、無ければ末尾に列を追加する。No が一致しない
+    結果は書き込まない（CSV には残るため追跡可能）。戻り値は更新した行数。
+    """
+    if input_path.suffix.lower() not in (".xlsx", ".xlsm"):
+        raise RuntimeError("--update-excel は .xlsx / .xlsm のみ対応です（CSV 入力は対象外）。")
+
+    from openpyxl import load_workbook  # 遅延 import（CSV 運用時は不要）
+
+    wb = load_workbook(input_path)
+    ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    # ヘッダー行（1 行目）を読み取り、列名 -> 列番号 を作る
+    header: dict[str, int] = {}
+    for col_idx, cell in enumerate(ws[1], start=1):
+        name = safe_str(cell.value)
+        if name:
+            header[name] = col_idx
+
+    # No 列を特定
+    no_col_name = find_col(list(header.keys()), COLUMN_CANDIDATES["no"])
+    if not no_col_name:
+        raise RuntimeError("Excel に No 列が見つからず、行を特定できません。")
+    no_col_idx = header[no_col_name]
+
+    # 出力列の列番号を決定（無ければ末尾に追加）
+    next_col = (max(header.values()) if header else 0) + 1
+    target_cols: dict[str, int] = {}
+    for key, col_name in EXCEL_RESULT_COLUMNS:
+        if col_name in header:
+            target_cols[key] = header[col_name]
+        else:
+            ws.cell(row=1, column=next_col, value=col_name)
+            target_cols[key] = next_col
+            next_col += 1
+
+    # No -> 行番号 のマップを作る（データは 2 行目以降）
+    row_by_no: dict[str, int] = {}
+    for r in range(2, ws.max_row + 1):
+        key = _norm_no(ws.cell(row=r, column=no_col_idx).value)
+        if key and key not in row_by_no:
+            row_by_no[key] = r
+
+    updated = 0
+    for result in results:
+        row = row_by_no.get(_norm_no(result.get("no")))
+        if not row:
+            continue
+        for key, _ in EXCEL_RESULT_COLUMNS:
+            ws.cell(row=row, column=target_cols[key], value=result.get(key, "") or "")
+        updated += 1
+
+    wb.save(input_path)
+    return updated
 
 
 # --------------------------------------------------------------------------- #
@@ -355,11 +497,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
     parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
     parser.add_argument(
+        "--write-mode",
+        default="create_only",
+        choices=["create_only", "update_only", "upsert"],
+        help="create_only: 新規のみ / update_only: 既存のみ更新 / upsert: 既存は更新、なければ新規作成",
+    )
+    parser.add_argument(
         "--allow-duplicate",
         action="store_true",
-        help="同一 slug の既存投稿があっても上書き更新する（既定はスキップ）",
+        help="（非推奨）--write-mode upsert と同じ。後方互換のため残置",
     )
     parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
+    parser.add_argument(
+        "--update-excel",
+        action="store_true",
+        help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
+    )
     return parser.parse_args()
 
 
@@ -383,8 +536,16 @@ def main() -> int:
     if col["kw"] is None and col["title"] is None:
         raise RuntimeError("KW 列・タイトル列のどちらも見つかりません。管理表の列名を確認してください。")
 
+    # --allow-duplicate は後方互換のため upsert 相当として扱う（write_mode 既定時のみ）
+    write_mode = args.write_mode
+    if args.allow_duplicate and write_mode == "create_only":
+        write_mode = "upsert"
+        print("  [注意] --allow-duplicate は非推奨です。--write-mode upsert として扱います。")
+    print(f"  書き込みモード: {write_mode}")
+
     wp: WordPressClient | None = None
     if not args.dry_run:
+        # 投稿モードでは認証必須
         wp = WordPressClient(
             env_required("WP_BASE_URL"),
             env_required("WP_USERNAME"),
@@ -397,6 +558,20 @@ def main() -> int:
             raise RuntimeError(
                 f"WordPress 認証に失敗しました。WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を確認してください: {exc}"
             )
+    else:
+        # dry-run では認証情報があれば既存有無の判定に使う（無ければ判定不可として続行）
+        if all(os.environ.get(k, "").strip() for k in ("WP_BASE_URL", "WP_USERNAME", "WP_APP_PASSWORD")):
+            try:
+                wp = WordPressClient(
+                    os.environ["WP_BASE_URL"], os.environ["WP_USERNAME"], os.environ["WP_APP_PASSWORD"]
+                )
+                user = wp.verify_auth()
+                print(f"  認証OK（dry-run/既存判定用）: {user}")
+            except Exception as exc:
+                wp = None
+                print(f"  [注意] dry-run の既存判定をスキップします（認証不可: {exc}）")
+        else:
+            print("  [注意] 認証情報が無いため dry-run では既存有無を判定しません。")
 
     results: list[dict[str, Any]] = []
     processed = 0
@@ -438,6 +613,7 @@ def main() -> int:
             "status": "",
             "post_id": "",
             "post_link": "",
+            "posted_at": "",
             "message": "",
         }
 
@@ -450,35 +626,61 @@ def main() -> int:
 
         md_text = article_path.read_text(encoding="utf-8")
         content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
+        img_note = "画像あり" if image_path else "画像なし"
 
+        # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
+        existing = wp.find_post_by_slug(slug, args.post_status) if wp else None
+        existence_known = wp is not None
+        if not existence_known:
+            existence_note = "既存不明(認証なし)"
+        else:
+            existence_note = "既存あり" if existing else "既存なし"
+
+        if write_mode == "create_only":
+            action = "skip" if existing else "create"
+        elif write_mode == "update_only":
+            action = "update" if existing else "skip"
+        else:  # upsert
+            action = "update" if existing else "create"
+        post_id_to_update = int(existing["id"]) if (existing and action == "update") else None
+
+        action_label = {"create": "新規作成予定", "update": "更新予定", "skip": "スキップ予定"}[action]
+
+        if existing:
+            result["post_id"] = existing.get("id", "")
+            result["post_link"] = existing.get("link", "")
+
+        # ---- dry-run：判定結果のみ表示して次へ ------------------------------
         if args.dry_run:
             result["status"] = "dry-run"
-            img_note = "画像あり" if image_path else "画像なし"
             cat = "/".join(category_names) or "-"
             tag = "/".join(tag_names) or "-"
-            result["message"] = f"投稿準備OK（{img_note} / cat:{cat} / tag:{tag}）"
+            result["message"] = f"{write_mode}: {existence_note} → {action_label}（{img_note} / cat:{cat} / tag:{tag}）"
             results.append(result)
             processed += 1
             print(f"[DRY-RUN] No.{no_value} {title} -> {result['message']}")
             continue
 
+        # ---- 実投稿 ---------------------------------------------------------
         try:
             assert wp is not None
 
-            existing = None if args.allow_duplicate else wp.find_post_by_slug(slug, args.post_status)
-            if existing:
+            if action == "skip":
                 result["status"] = "skipped"
-                result["post_id"] = existing.get("id", "")
-                result["post_link"] = existing.get("link", "")
-                result["message"] = "同一 slug の投稿が既に存在するためスキップ（--allow-duplicate で上書き可）"
+                if write_mode == "create_only":
+                    result["message"] = "同一 slug の投稿が既に存在するためスキップ（更新するには write_mode=update_only/upsert）"
+                else:  # update_only かつ既存なし
+                    result["message"] = "更新対象の既存投稿が見つからないためスキップ"
                 results.append(result)
                 processed += 1
-                print(f"[SKIP] No.{no_value} {title} -> 既存 slug: {slug}")
+                print(f"[SKIP] No.{no_value} {title} -> {result['message']}")
                 continue
 
             category_ids = [i for i in (wp.find_or_create_term("category", n) for n in category_names) if i]
             tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
 
+            # 画像がある場合のみアップロードして featured_media を差し替える。
+            # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
             featured_media: int | None = None
             if image_path:
                 featured_media = wp.upload_media(image_path, alt_text=alt_text)
@@ -492,14 +694,21 @@ def main() -> int:
                 category_ids=category_ids,
                 tag_ids=tag_ids,
                 featured_media=featured_media,
+                post_id=post_id_to_update,
             )
 
-            result["status"] = "posted"
             result["post_id"] = created.get("id", "")
             result["post_link"] = created.get("link", "")
+            result["posted_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             note = "（画像なし）" if not image_path else ""
-            result["message"] = f"投稿成功 {note}".strip()
-            print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
+            if post_id_to_update:
+                result["status"] = "updated"
+                result["message"] = f"既存投稿を更新しました {note}".strip()
+                print(f"[UPDATED] No.{no_value} {title} -> {result['post_link']} {note}")
+            else:
+                result["status"] = "posted"
+                result["message"] = f"新規投稿しました {note}".strip()
+                print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
 
         except Exception as exc:
             result["status"] = "error"
@@ -520,9 +729,17 @@ def main() -> int:
         results,
         columns=[
             "no", "kw", "title", "slug", "article_file", "image_file",
-            "status", "post_id", "post_link", "message",
+            "status", "post_id", "post_link", "posted_at", "message",
         ],
     ).to_csv(result_path, index=False, encoding="utf-8-sig")
+
+    # Excel への書き戻し（--update-excel 指定時のみ）
+    if args.update_excel:
+        try:
+            updated = update_excel_results(input_path, args.sheet, results)
+            print(f"Excel 更新: {input_path}（{updated} 行に投稿結果を書き込み）")
+        except Exception as exc:
+            print(f"[WARN] Excel 更新に失敗しました（CSV は出力済み）: {exc}")
 
     # サマリ
     summary: dict[str, int] = {}

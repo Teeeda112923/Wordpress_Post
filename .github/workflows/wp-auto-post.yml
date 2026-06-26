@@ -25,6 +25,15 @@ on:
           - draft
           - pending
           - publish
+      write_mode:
+        description: "書き込みモード"
+        type: choice
+        required: true
+        default: "create_only"
+        options:
+          - create_only
+          - update_only
+          - upsert
       input_file:
         description: "制作管理表のパス"
         type: string
@@ -35,14 +44,20 @@ on:
         type: string
         required: true
         default: "制作管理表"
+      update_excel:
+        description: "投稿結果を制作管理表(Excel)へ書き戻してコミットする"
+        type: boolean
+        required: true
+        default: false
 
 # 同時実行を禁止し、二重投稿事故を防ぐ
 concurrency:
   group: wp-auto-post
   cancel-in-progress: false
 
+# Excel 書き戻しのコミットに備えて write を付与（コミットは update_excel=true 時のみ）
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   post:
@@ -74,15 +89,21 @@ jobs:
             DRY_RUN_FLAG="--dry-run"
           fi
 
+          UPDATE_EXCEL_FLAG=""
+          if [ "${{ inputs.update_excel }}" = "true" ]; then
+            UPDATE_EXCEL_FLAG="--update-excel"
+          fi
+
           python wp_auto_post.py \
             --input "${{ inputs.input_file }}" \
             --sheet "${{ inputs.sheet_name }}" \
             --articles-dir articles \
             --images-dir eyecatches \
             --post-status "${{ inputs.post_status }}" \
+            --write-mode "${{ inputs.write_mode }}" \
             --limit "${{ inputs.limit }}" \
             --output-dir results \
-            $DRY_RUN_FLAG
+            $DRY_RUN_FLAG $UPDATE_EXCEL_FLAG
 
       - name: Upload result CSV
         if: always()
@@ -92,3 +113,16 @@ jobs:
           path: results/results_*.csv
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Commit updated Excel
+        if: ${{ inputs.update_excel == true }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ inputs.input_file }}"
+          if git diff --cached --quiet; then
+            echo "Excel に変更はありません。"
+          else
+            git commit -m "Update production sheet with post results [skip ci]"
+            git push
+          fi
