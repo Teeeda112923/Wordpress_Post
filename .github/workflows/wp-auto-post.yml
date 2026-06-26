@@ -25,6 +25,15 @@ on:
           - draft
           - pending
           - publish
+      write_mode:
+        description: "書き込みモード"
+        type: choice
+        required: true
+        default: "create_only"
+        options:
+          - create_only
+          - update_only
+          - upsert
       input_file:
         description: "制作管理表のパス"
         type: string
@@ -91,6 +100,7 @@ jobs:
             --articles-dir articles \
             --images-dir eyecatches \
             --post-status "${{ inputs.post_status }}" \
+            --write-mode "${{ inputs.write_mode }}" \
             --limit "${{ inputs.limit }}" \
             --output-dir results \
             $DRY_RUN_FLAG $UPDATE_EXCEL_FLAG

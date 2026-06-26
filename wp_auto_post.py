@@ -497,9 +497,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
     parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
     parser.add_argument(
+        "--write-mode",
+        default="create_only",
+        choices=["create_only", "update_only", "upsert"],
+        help="create_only: 新規のみ / update_only: 既存のみ更新 / upsert: 既存は更新、なければ新規作成",
+    )
+    parser.add_argument(
         "--allow-duplicate",
         action="store_true",
-        help="同一 slug の既存投稿があっても上書き更新する（既定はスキップ）",
+        help="（非推奨）--write-mode upsert と同じ。後方互換のため残置",
     )
     parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
     parser.add_argument(
@@ -530,8 +536,16 @@ def main() -> int:
     if col["kw"] is None and col["title"] is None:
         raise RuntimeError("KW 列・タイトル列のどちらも見つかりません。管理表の列名を確認してください。")
 
+    # --allow-duplicate は後方互換のため upsert 相当として扱う（write_mode 既定時のみ）
+    write_mode = args.write_mode
+    if args.allow_duplicate and write_mode == "create_only":
+        write_mode = "upsert"
+        print("  [注意] --allow-duplicate は非推奨です。--write-mode upsert として扱います。")
+    print(f"  書き込みモード: {write_mode}")
+
     wp: WordPressClient | None = None
     if not args.dry_run:
+        # 投稿モードでは認証必須
         wp = WordPressClient(
             env_required("WP_BASE_URL"),
             env_required("WP_USERNAME"),
@@ -544,6 +558,20 @@ def main() -> int:
             raise RuntimeError(
                 f"WordPress 認証に失敗しました。WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を確認してください: {exc}"
             )
+    else:
+        # dry-run では認証情報があれば既存有無の判定に使う（無ければ判定不可として続行）
+        if all(os.environ.get(k, "").strip() for k in ("WP_BASE_URL", "WP_USERNAME", "WP_APP_PASSWORD")):
+            try:
+                wp = WordPressClient(
+                    os.environ["WP_BASE_URL"], os.environ["WP_USERNAME"], os.environ["WP_APP_PASSWORD"]
+                )
+                user = wp.verify_auth()
+                print(f"  認証OK（dry-run/既存判定用）: {user}")
+            except Exception as exc:
+                wp = None
+                print(f"  [注意] dry-run の既存判定をスキップします（認証不可: {exc}）")
+        else:
+            print("  [注意] 認証情報が無いため dry-run では既存有無を判定しません。")
 
     results: list[dict[str, Any]] = []
     processed = 0
@@ -598,35 +626,61 @@ def main() -> int:
 
         md_text = article_path.read_text(encoding="utf-8")
         content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
+        img_note = "画像あり" if image_path else "画像なし"
 
+        # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
+        existing = wp.find_post_by_slug(slug, args.post_status) if wp else None
+        existence_known = wp is not None
+        if not existence_known:
+            existence_note = "既存不明(認証なし)"
+        else:
+            existence_note = "既存あり" if existing else "既存なし"
+
+        if write_mode == "create_only":
+            action = "skip" if existing else "create"
+        elif write_mode == "update_only":
+            action = "update" if existing else "skip"
+        else:  # upsert
+            action = "update" if existing else "create"
+        post_id_to_update = int(existing["id"]) if (existing and action == "update") else None
+
+        action_label = {"create": "新規作成予定", "update": "更新予定", "skip": "スキップ予定"}[action]
+
+        if existing:
+            result["post_id"] = existing.get("id", "")
+            result["post_link"] = existing.get("link", "")
+
+        # ---- dry-run：判定結果のみ表示して次へ ------------------------------
         if args.dry_run:
             result["status"] = "dry-run"
-            img_note = "画像あり" if image_path else "画像なし"
             cat = "/".join(category_names) or "-"
             tag = "/".join(tag_names) or "-"
-            result["message"] = f"投稿準備OK（{img_note} / cat:{cat} / tag:{tag}）"
+            result["message"] = f"{write_mode}: {existence_note} → {action_label}（{img_note} / cat:{cat} / tag:{tag}）"
             results.append(result)
             processed += 1
             print(f"[DRY-RUN] No.{no_value} {title} -> {result['message']}")
             continue
 
+        # ---- 実投稿 ---------------------------------------------------------
         try:
             assert wp is not None
 
-            existing = None if args.allow_duplicate else wp.find_post_by_slug(slug, args.post_status)
-            if existing:
+            if action == "skip":
                 result["status"] = "skipped"
-                result["post_id"] = existing.get("id", "")
-                result["post_link"] = existing.get("link", "")
-                result["message"] = "同一 slug の投稿が既に存在するためスキップ（--allow-duplicate で上書き可）"
+                if write_mode == "create_only":
+                    result["message"] = "同一 slug の投稿が既に存在するためスキップ（更新するには write_mode=update_only/upsert）"
+                else:  # update_only かつ既存なし
+                    result["message"] = "更新対象の既存投稿が見つからないためスキップ"
                 results.append(result)
                 processed += 1
-                print(f"[SKIP] No.{no_value} {title} -> 既存 slug: {slug}")
+                print(f"[SKIP] No.{no_value} {title} -> {result['message']}")
                 continue
 
             category_ids = [i for i in (wp.find_or_create_term("category", n) for n in category_names) if i]
             tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
 
+            # 画像がある場合のみアップロードして featured_media を差し替える。
+            # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
             featured_media: int | None = None
             if image_path:
                 featured_media = wp.upload_media(image_path, alt_text=alt_text)
@@ -640,15 +694,21 @@ def main() -> int:
                 category_ids=category_ids,
                 tag_ids=tag_ids,
                 featured_media=featured_media,
+                post_id=post_id_to_update,
             )
 
-            result["status"] = "posted"
             result["post_id"] = created.get("id", "")
             result["post_link"] = created.get("link", "")
             result["posted_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             note = "（画像なし）" if not image_path else ""
-            result["message"] = f"投稿成功 {note}".strip()
-            print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
+            if post_id_to_update:
+                result["status"] = "updated"
+                result["message"] = f"既存投稿を更新しました {note}".strip()
+                print(f"[UPDATED] No.{no_value} {title} -> {result['post_link']} {note}")
+            else:
+                result["status"] = "posted"
+                result["message"] = f"新規投稿しました {note}".strip()
+                print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
 
         except Exception as exc:
             result["status"] = "error"
