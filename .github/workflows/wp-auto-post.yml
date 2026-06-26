@@ -38,7 +38,7 @@ on:
         description: "制作管理表のパス"
         type: string
         required: true
-        default: "data/seo_80kw_production_management.xlsx"
+        default: "data/seo_80kw_production_management_v2_with_image_prompt_sheet.xlsx"
       sheet_name:
         description: "Excel シート名"
         type: string
