@@ -277,19 +277,86 @@ def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | No
 
 
 def find_image_file(images_dir: Path, slug: str, no_value: str, image_name: str) -> Path | None:
+    """アイキャッチ画像を探索する。今後の標準は PNG。
+
+    優先順位:
+      1. 管理表「画像ファイル名」列に値があればそれ
+      2. eyecatches/{No3桁}.png
+      3. eyecatches/{slug}.png
+      4. 互換: No3桁 / No / slug の .webp / .jpg / .jpeg
+    """
+    compat_exts = [".webp", ".jpg", ".jpeg"]
+    no_names = row_no_to_names(no_value)  # 例: ["001", "1"]
     candidates: list[Path] = []
-    # 0) 管理表に明示された画像ファイル名を最優先
+
+    # 1) 管理表に明示された画像ファイル名を最優先
     if image_name:
         candidates.append(images_dir / image_name)
         stem = Path(image_name).stem
-        candidates += [images_dir / f"{stem}{ext}" for ext in IMAGE_EXTENSIONS]
-    # 1) slug 起点
+        candidates.append(images_dir / f"{stem}.png")
+        candidates += [images_dir / f"{stem}{ext}" for ext in compat_exts]
+    # 2) {No3桁}.png（→ {No}.png）
+    candidates += [images_dir / f"{name}.png" for name in no_names]
+    # 3) {slug}.png
     if slug:
-        candidates += [images_dir / f"{slug}{ext}" for ext in IMAGE_EXTENSIONS]
-    # 2) No 起点（3桁ゼロ埋め / 素の No）
-    for name in row_no_to_names(no_value):
-        candidates += [images_dir / f"{name}{ext}" for ext in IMAGE_EXTENSIONS]
+        candidates.append(images_dir / f"{slug}.png")
+    # 4) 互換拡張子（No → slug の順）
+    for name in no_names:
+        candidates += [images_dir / f"{name}{ext}" for ext in compat_exts]
+    if slug:
+        candidates += [images_dir / f"{slug}{ext}" for ext in compat_exts]
     return first_existing(candidates)
+
+
+def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> dict[str, Any]:
+    """アイキャッチ画像を検査し、ログ文字列と Excel 反映用の値を返す。
+
+    判定:
+      - 見つからない      -> NG   / 画像未作成   / アイキャッチ画像が見つかりません
+      - PNG 以外          -> WARN / 要画像確認   / アイキャッチ画像がPNG形式ではありません
+      - 3:2 比率でない    -> WARN / 要画像確認   / アイキャッチ画像の比率が3:2ではありません
+      - 読み込めない      -> NG   / 要画像確認   / アイキャッチ画像のサイズが取得できません
+      - 上記をすべて満たす -> OK   / 画像確認済み / （エラーなし）
+    推奨サイズは 1200x800px（3:2）。ファイル名が No と対応しているかも併せて確認する。
+    """
+    names = row_no_to_names(no_value)
+    no3 = names[0] if names else safe_str(no_value)
+    expected = images_dir / f"{no3}.png"
+
+    def make(level: str, status_label: str, error_content: str, log: str) -> dict[str, Any]:
+        return {
+            "level": level,
+            "image_status": status_label,
+            "error_content": error_content,
+            "log": log,
+        }
+
+    if image_path is None or not image_path.exists():
+        return make("NG", "画像未作成", "アイキャッチ画像が見つかりません",
+                    f"[NG] {no3} {expected} not found")
+
+    try:
+        from PIL import Image  # 遅延 import
+        with Image.open(image_path) as im:
+            fmt = im.format
+            width, height = im.size
+    except Exception as exc:
+        return make("NG", "要画像確認", "アイキャッチ画像のサイズが取得できません",
+                    f"[NG] {no3} {image_path} cannot read image ({exc})")
+
+    if (fmt or "").upper() != "PNG":
+        return make("WARN", "要画像確認", "アイキャッチ画像がPNG形式ではありません",
+                    f"[WARN] {no3} {image_path} is not PNG ({fmt}, {width}x{height})")
+
+    ratio = width / height if height else 0
+    if abs(ratio - 1.5) > 0.05:  # 3:2 = 1.5
+        return make("WARN", "要画像確認", "アイキャッチ画像の比率が3:2ではありません",
+                    f"[WARN] {no3} {image_path} ratio is not 3:2 ({width}x{height})")
+
+    size_note = "" if (width, height) == (1200, 800) else " (推奨1200x800)"
+    name_note = "" if image_path.stem in set(names) else " ※ファイル名がNoと不一致"
+    return make("OK", "画像確認済み", "",
+                f"[OK] {no3} {image_path} exists, PNG, {width}x{height}, ratio 3:2{size_note}{name_note}")
 
 
 def extract_api_error(response: requests.Response) -> str:
@@ -327,7 +394,11 @@ EXCEL_RESULT_COLUMNS: list[tuple[str, str, str]] = [
     ("error_content", "エラー内容", "overwrite"),
     ("char_count", "文字数実績", "keep_if_empty"),
     ("char_judge", "文字数判定", "keep_if_empty"),
+    ("image_status", "画像制作ステータス", "overwrite"),
 ]
+
+# 画像チェックのみを反映する際に書き込む列キー（投稿系の列は触らない）
+IMAGE_ONLY_KEYS = {"image_status", "error_content", "updated_at"}
 
 
 def _norm_no(value: Any) -> str:
@@ -341,12 +412,19 @@ def _norm_no(value: Any) -> str:
         return s.lower()
 
 
-def update_excel_results(input_path: Path, sheet: str | None, results: list[dict[str, Any]]) -> int:
+def update_excel_results(
+    input_path: Path,
+    sheet: str | None,
+    results: list[dict[str, Any]],
+    only_keys: set[str] | None = None,
+) -> int:
     """入力 Excel の該当シートへ投稿結果を No 一致で書き戻す。
 
     他シートや書式を壊さないよう openpyxl で既存ブックを直接更新する。
     既存の同名列があれば上書き、無ければ末尾に列を追加する。No が一致しない
     結果は書き込まない（CSV には残るため追跡可能）。戻り値は更新した行数。
+    only_keys を指定すると、その結果キーに対応する列だけを書き込む
+    （画像チェックのみ反映するモードで使用）。
     """
     if input_path.suffix.lower() not in (".xlsx", ".xlsm"):
         raise RuntimeError("--update-excel は .xlsx / .xlsm のみ対応です（CSV 入力は対象外）。")
@@ -369,10 +447,13 @@ def update_excel_results(input_path: Path, sheet: str | None, results: list[dict
         raise RuntimeError("Excel に No 列が見つからず、行を特定できません。")
     no_col_idx = header[no_col_name]
 
+    # 書き込む列（only_keys 指定時はその列だけ）
+    write_cols = [c for c in EXCEL_RESULT_COLUMNS if only_keys is None or c[0] in only_keys]
+
     # 出力列の列番号を決定（無ければ末尾に追加）
     next_col = (max(header.values()) if header else 0) + 1
     target_cols: dict[str, int] = {}
-    for key, col_name, _policy in EXCEL_RESULT_COLUMNS:
+    for key, col_name, _policy in write_cols:
         if col_name in header:
             target_cols[key] = header[col_name]
         else:
@@ -392,15 +473,12 @@ def update_excel_results(input_path: Path, sheet: str | None, results: list[dict
         row = row_by_no.get(_norm_no(result.get("no")))
         if not row:
             continue
-        # エラー内容はエラー/スキップ時のみ記録（成功時は空にして過去のエラーを消す）
-        error_content = result.get("message", "") if result.get("status") in ("error", "skipped") else ""
-        values = {**result, "error_content": error_content}
-        for key, _col_name, policy in EXCEL_RESULT_COLUMNS:
-            val = values.get(key, "")
+        for key, _col_name, policy in write_cols:
+            val = result.get(key, "")
             cell = ws.cell(row=row, column=target_cols[key])
             if policy == "keep_if_empty" and (val is None or val == ""):
                 continue  # 空なら既存セルを保持（日時・ID などを蓄積）
-            cell.value = val if val not in (None,) else ""
+            cell.value = val if val is not None else ""
         updated += 1
 
     wb.save(input_path)
@@ -567,6 +645,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
     )
+    parser.add_argument(
+        "--check-images-only",
+        action="store_true",
+        help="WordPress 投稿を行わず、アイキャッチ画像のチェック結果だけを出力する",
+    )
     return parser.parse_args()
 
 
@@ -585,9 +668,10 @@ def main() -> int:
     print("=== 列マッピング結果 ===")
     for key, name in col.items():
         print(f"  {key:10s} -> {name}")
-    print(f"  対象行数: {len(df)}  / モード: {'DRY-RUN' if args.dry_run else 'POST'}  / status: {args.post_status}")
+    run_label = "CHECK-IMAGES-ONLY" if args.check_images_only else ("DRY-RUN" if args.dry_run else "POST")
+    print(f"  対象行数: {len(df)}  / モード: {run_label}  / status: {args.post_status}")
 
-    if col["kw"] is None and col["title"] is None:
+    if not args.check_images_only and col["kw"] is None and col["title"] is None:
         raise RuntimeError("KW 列・タイトル列のどちらも見つかりません。管理表の列名を確認してください。")
 
     # --allow-duplicate は後方互換のため upsert 相当として扱う（write_mode 既定時のみ）
@@ -595,10 +679,13 @@ def main() -> int:
     if args.allow_duplicate and write_mode == "create_only":
         write_mode = "upsert"
         print("  [注意] --allow-duplicate は非推奨です。--write-mode upsert として扱います。")
-    print(f"  書き込みモード: {write_mode}")
+    if not args.check_images_only:
+        print(f"  書き込みモード: {write_mode}")
 
     wp: WordPressClient | None = None
-    if not args.dry_run:
+    if args.check_images_only:
+        print("  画像チェックのみ実行します（WordPress 投稿は行いません）。")
+    elif not args.dry_run:
         # 投稿モードでは認証必須
         wp = WordPressClient(
             env_required("WP_BASE_URL"),
@@ -641,8 +728,8 @@ def main() -> int:
         title = safe_str(row.get(col["title"])) if col["title"] else ""
         if not title:
             title = kw
-        if not title:
-            continue  # タイトルも KW も無い行はスキップ（空行対策）
+        if not title and not args.check_images_only:
+            continue  # 投稿系: タイトルも KW も無い行はスキップ（空行対策）
 
         explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
         slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
@@ -657,7 +744,12 @@ def main() -> int:
         article_path = find_article_file(articles_dir, explicit_slug, no_value)
         image_path = find_image_file(images_dir, explicit_slug, no_value, image_name)
 
-        run_mode = f"{'dry-run' if args.dry_run else 'post'}/{write_mode}"
+        # アイキャッチ画像チェック（dry-run / post / check-images-only 共通でログ出力）
+        img_chk = check_eyecatch(image_path, no_value, images_dir)
+        print(img_chk["log"])
+
+        run_mode = "check-images-only" if args.check_images_only \
+            else f"{'dry-run' if args.dry_run else 'post'}/{write_mode}"
         result: dict[str, Any] = {
             "no": no_value,
             "kw": kw,
@@ -673,8 +765,20 @@ def main() -> int:
             "run_mode": run_mode,
             "char_count": "",
             "char_judge": "",
+            "image_status": img_chk["image_status"],
+            "image_error": img_chk["error_content"],
+            "error_content": "",
             "message": "",
         }
+
+        # 画像チェックのみモード: 投稿処理を行わず結果を記録して次へ
+        if args.check_images_only:
+            result["status"] = "image-check"
+            result["updated_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            result["message"] = img_chk["log"]
+            results.append(result)
+            processed += 1
+            continue
 
         if article_path is None:
             result["status"] = "skipped"
@@ -786,6 +890,11 @@ def main() -> int:
         if args.sleep > 0:
             time.sleep(args.sleep)
 
+    # エラー内容を確定（投稿エラー/スキップ理由を優先、無ければ画像チェックの問題）
+    for r in results:
+        post_msg = r.get("message", "") if r.get("status") in ("error", "skipped") else ""
+        r["error_content"] = post_msg or r.get("image_error", "")
+
     # 結果 CSV
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -796,15 +905,18 @@ def main() -> int:
         columns=[
             "no", "kw", "title", "slug", "article_file", "image_file",
             "status", "post_id", "post_link", "posted_at", "updated_at",
-            "run_mode", "char_count", "char_judge", "message",
+            "run_mode", "char_count", "char_judge", "image_status",
+            "error_content", "message",
         ],
     ).to_csv(result_path, index=False, encoding="utf-8-sig")
 
     # Excel への書き戻し（--update-excel 指定時のみ）
     if args.update_excel:
         try:
-            updated = update_excel_results(input_path, args.sheet, results)
-            print(f"Excel 更新: {input_path}（{updated} 行に投稿結果を書き込み）")
+            only = IMAGE_ONLY_KEYS if args.check_images_only else None
+            updated = update_excel_results(input_path, args.sheet, results, only_keys=only)
+            scope = "画像チェック結果" if args.check_images_only else "投稿結果"
+            print(f"Excel 更新: {input_path}（{updated} 行に{scope}を書き込み）")
         except Exception as exc:
             print(f"[WARN] Excel 更新に失敗しました（CSV は出力済み）: {exc}")
 
