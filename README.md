@@ -219,6 +219,52 @@ GitHub Actions では `Actions → Build Eyecatches → Run workflow`。`commit=
 
 > 推奨フロー: まず `Build Eyecatches` で画像を用意 → その後 `WordPress Auto Post` で投稿。
 
+## アイキャッチを OpenAI で生成（generate_eyecatches.py）
+
+制作管理表ブックの **「画像生成プロンプト一覧」** シートの `完成プロンプト` を使い、OpenAI の画像生成 API（`gpt-image-1`）で `eyecatches/001.png` 〜 `080.png` を **1 件ずつ** 生成します。生成画像は **1200×800px（3:2）の PNG** に整えて保存します。
+
+### 準備
+
+1. 依存をインストール: `pip install -r requirements.txt`
+2. プロジェクト直下に `.env` を作成し、API キーを記載（**コミット禁止**。`.gitignore` 済み）:
+
+   ```text
+   OPENAI_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
+   ```
+
+   雛形は `.env.example` を参照。`gpt-image-1` は OpenAI 側で組織の本人確認が必要な場合があります。
+
+### 使い方
+
+```bash
+# まず 001〜005 でテスト
+python generate_eyecatches.py --start 001 --end 005
+
+# 既存はスキップしつつ全件
+python generate_eyecatches.py --start 001 --end 080 --skip-existing
+
+# 既存を上書き再生成
+python generate_eyecatches.py --start 001 --end 010 --force
+
+# API を呼ばず対象と保存先だけ確認
+python generate_eyecatches.py --start 001 --end 005 --dry-run
+```
+
+主なオプション: `--start` / `--end`（No 範囲）/ `--limit N`（件数上限）/ `--force`（上書き）/
+`--skip-existing`（既定。明示用）/ `--quality low|medium|high|auto`（既定 high）/
+`--size`（生成サイズ、既定 `1536x1024` を 1200×800 に整形）/ `--max-retries`（既定 2）。
+
+### 仕様
+
+- **1 件ずつ生成**（`n=1`、まとめ生成しない）。途中で失敗しても次の No へ進み、**最大 2 回リトライ**します。
+- API レスポンスの Base64 を **PNG にデコード**して保存し、その後 **3:2 にクロップ→1200×800** へ整形。
+- 既存ファイルは既定でスキップ（`--force` で上書き）。
+- プロンプト末尾に「1枚のみ / 3:2 / 日本語文字は大きく読みやすく / 小さい文字を入れすぎない」を自動付与し、画像内の日本語崩れを抑えます。
+- 結果は `results/eyecatch_generation_results.csv` に出力（列: `No`, `指定KW`, `保存ファイル名`, `status`, `width`, `height`, `error`, `generated_at`）。
+
+> 運用: まず `--start 001 --end 005` でテストし、問題なければ `--start 006 --end 080` に広げます。
+> 生成後は `python wp_auto_post.py --check-images-only` で PNG / 3:2 をまとめて検査できます。
+
 ## 5. ローカル実行（任意）
 
 ```bash
