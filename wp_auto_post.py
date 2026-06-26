@@ -275,6 +275,89 @@ def extract_api_error(response: requests.Response) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Excel への結果書き戻し（--update-excel 指定時のみ）
+# --------------------------------------------------------------------------- #
+# 結果キー -> Excel 列名（無ければ末尾に新規追加）
+EXCEL_RESULT_COLUMNS: list[tuple[str, str]] = [
+    ("status", "投稿ステータス"),
+    ("post_id", "投稿ID"),
+    ("post_link", "投稿URL"),
+    ("posted_at", "投稿日時"),
+    ("message", "エラーメッセージ"),
+]
+
+
+def _norm_no(value: Any) -> str:
+    """No 値を比較用に正規化する（1 / 1.0 / '001' を同一視）。"""
+    s = safe_str(value)
+    if not s:
+        return ""
+    try:
+        return str(int(float(s)))
+    except ValueError:
+        return s.lower()
+
+
+def update_excel_results(input_path: Path, sheet: str | None, results: list[dict[str, Any]]) -> int:
+    """入力 Excel の該当シートへ投稿結果を No 一致で書き戻す。
+
+    他シートや書式を壊さないよう openpyxl で既存ブックを直接更新する。
+    既存の同名列があれば上書き、無ければ末尾に列を追加する。No が一致しない
+    結果は書き込まない（CSV には残るため追跡可能）。戻り値は更新した行数。
+    """
+    if input_path.suffix.lower() not in (".xlsx", ".xlsm"):
+        raise RuntimeError("--update-excel は .xlsx / .xlsm のみ対応です（CSV 入力は対象外）。")
+
+    from openpyxl import load_workbook  # 遅延 import（CSV 運用時は不要）
+
+    wb = load_workbook(input_path)
+    ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    # ヘッダー行（1 行目）を読み取り、列名 -> 列番号 を作る
+    header: dict[str, int] = {}
+    for col_idx, cell in enumerate(ws[1], start=1):
+        name = safe_str(cell.value)
+        if name:
+            header[name] = col_idx
+
+    # No 列を特定
+    no_col_name = find_col(list(header.keys()), COLUMN_CANDIDATES["no"])
+    if not no_col_name:
+        raise RuntimeError("Excel に No 列が見つからず、行を特定できません。")
+    no_col_idx = header[no_col_name]
+
+    # 出力列の列番号を決定（無ければ末尾に追加）
+    next_col = (max(header.values()) if header else 0) + 1
+    target_cols: dict[str, int] = {}
+    for key, col_name in EXCEL_RESULT_COLUMNS:
+        if col_name in header:
+            target_cols[key] = header[col_name]
+        else:
+            ws.cell(row=1, column=next_col, value=col_name)
+            target_cols[key] = next_col
+            next_col += 1
+
+    # No -> 行番号 のマップを作る（データは 2 行目以降）
+    row_by_no: dict[str, int] = {}
+    for r in range(2, ws.max_row + 1):
+        key = _norm_no(ws.cell(row=r, column=no_col_idx).value)
+        if key and key not in row_by_no:
+            row_by_no[key] = r
+
+    updated = 0
+    for result in results:
+        row = row_by_no.get(_norm_no(result.get("no")))
+        if not row:
+            continue
+        for key, _ in EXCEL_RESULT_COLUMNS:
+            ws.cell(row=row, column=target_cols[key], value=result.get(key, "") or "")
+        updated += 1
+
+    wb.save(input_path)
+    return updated
+
+
+# --------------------------------------------------------------------------- #
 # WordPress クライアント
 # --------------------------------------------------------------------------- #
 class WordPressClient:
@@ -419,6 +502,11 @@ def parse_args() -> argparse.Namespace:
         help="同一 slug の既存投稿があっても上書き更新する（既定はスキップ）",
     )
     parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
+    parser.add_argument(
+        "--update-excel",
+        action="store_true",
+        help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
+    )
     return parser.parse_args()
 
 
@@ -497,6 +585,7 @@ def main() -> int:
             "status": "",
             "post_id": "",
             "post_link": "",
+            "posted_at": "",
             "message": "",
         }
 
@@ -556,6 +645,7 @@ def main() -> int:
             result["status"] = "posted"
             result["post_id"] = created.get("id", "")
             result["post_link"] = created.get("link", "")
+            result["posted_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             note = "（画像なし）" if not image_path else ""
             result["message"] = f"投稿成功 {note}".strip()
             print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
@@ -579,9 +669,17 @@ def main() -> int:
         results,
         columns=[
             "no", "kw", "title", "slug", "article_file", "image_file",
-            "status", "post_id", "post_link", "message",
+            "status", "post_id", "post_link", "posted_at", "message",
         ],
     ).to_csv(result_path, index=False, encoding="utf-8-sig")
+
+    # Excel への書き戻し（--update-excel 指定時のみ）
+    if args.update_excel:
+        try:
+            updated = update_excel_results(input_path, args.sheet, results)
+            print(f"Excel 更新: {input_path}（{updated} 行に投稿結果を書き込み）")
+        except Exception as exc:
+            print(f"[WARN] Excel 更新に失敗しました（CSV は出力済み）: {exc}")
 
     # サマリ
     summary: dict[str, int] = {}
