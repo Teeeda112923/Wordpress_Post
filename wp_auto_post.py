@@ -179,6 +179,20 @@ def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
     return html
 
 
+def build_image_block(image_url: str, alt_text: str) -> str:
+    """本文先頭に差し込むアイキャッチ画像の HTML（Gutenberg 画像ブロック）を返す。"""
+    import html as _html
+
+    safe_url = _html.escape(image_url, quote=True)
+    safe_alt = _html.escape(alt_text or "", quote=True)
+    return (
+        "<!-- wp:image {\"sizeSlug\":\"large\"} -->\n"
+        f'<figure class="wp-block-image size-large">'
+        f'<img src="{safe_url}" alt="{safe_alt}"/></figure>\n'
+        "<!-- /wp:image -->\n\n"
+    )
+
+
 def strip_leading_markdown_h1(text: str) -> str:
     """本文の最初の見出しが H1（"# ..."）ならその行を削除する。
 
@@ -565,7 +579,8 @@ class WordPressClient:
             return data[0]
         return None
 
-    def upload_media(self, image_path: Path, alt_text: str = "") -> int:
+    def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
+        """画像をアップロードし (media_id, source_url) を返す。"""
         mime_type, _ = mimetypes.guess_type(str(image_path))
         if not mime_type:
             mime_type = "application/octet-stream"
@@ -579,10 +594,12 @@ class WordPressClient:
             )
         if response.status_code >= 400:
             raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
-        media_id = int(response.json()["id"])
+        media = response.json()
+        media_id = int(media["id"])
+        source_url = media.get("source_url", "")
         if alt_text:
             self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
-        return media_id
+        return media_id, source_url
 
     def create_post(
         self,
@@ -649,6 +666,11 @@ def parse_args() -> argparse.Namespace:
         "--check-images-only",
         action="store_true",
         help="WordPress 投稿を行わず、アイキャッチ画像のチェック結果だけを出力する",
+    )
+    parser.add_argument(
+        "--no-inline-eyecatch",
+        action="store_true",
+        help="アイキャッチ画像を本文先頭に差し込まない（既定は差し込む）",
     )
     return parser.parse_args()
 
@@ -850,12 +872,16 @@ def main() -> int:
             # 画像がある場合のみアップロードして featured_media を差し替える。
             # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
             featured_media: int | None = None
+            post_content = content_html
             if image_path:
-                featured_media = wp.upload_media(image_path, alt_text=alt_text)
+                featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
+                # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
+                if not args.no_inline_eyecatch and media_url:
+                    post_content = build_image_block(media_url, alt_text) + content_html
 
             created = wp.create_post(
                 title=title,
-                content_html=content_html,
+                content_html=post_content,
                 slug=slug,
                 excerpt=excerpt,
                 status=args.post_status,
