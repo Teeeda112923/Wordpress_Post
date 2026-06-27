@@ -40,16 +40,6 @@ COL_TITLE = ["記事タイトル", "記事タイトル案", "タイトル"]
 COL_FILENAME = ["画像ファイル名(PNG)", "画像ファイル名", "ファイル名"]
 COL_PROMPT = ["完成プロンプト", "個別プロンプト", "プロンプト"]
 
-# 日本語文字崩れ対策などの追加指示（プロンプト末尾に付与）
-PROMPT_SUFFIX = (
-    "\n\n# 追加指示（厳守）\n"
-    "・必ず1枚の画像として生成する（コラージュ・分割・グリッドにしない）\n"
-    "・3:2比率（横長）で生成する\n"
-    "・日本語文字は大きく読みやすくし、文字崩れを起こさないようにする\n"
-    "・小さい文字を入れすぎない（読めない細かな文字を避ける）\n"
-)
-
-
 def find_col(columns: list[str], candidates: list[str]) -> str | None:
     norm = {str(c).strip().lower(): c for c in columns}
     for cand in candidates:
@@ -263,7 +253,8 @@ def main() -> int:
             print(f"[SKIP] {no:03d} {out_path} 既存（--force で上書き）")
             continue
 
-        full_prompt = prompt + PROMPT_SUFFIX
+        # 完成プロンプトはそのまま使う（Excel側に絶対条件・デザイン方向性まで内包済み）
+        full_prompt = prompt
 
         if args.dry_run:
             result["status"] = "dry-run"
