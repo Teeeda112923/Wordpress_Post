@@ -553,7 +553,7 @@ class WordPressClient:
         endpoint = "categories" if taxonomy == "category" else "tags"
         data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
         term_id = 0
-        for item in data or []:
+        for item in (data if isinstance(data, list) else []):
             if safe_str(item.get("name")).lower() == name.lower():
                 term_id = int(item["id"])
                 break
@@ -575,8 +575,12 @@ class WordPressClient:
             "per_page": 10,
         }
         data = self.request("GET", "posts", params=params)
-        if data:
-            return data[0]
+        if isinstance(data, list):
+            return data[0] if data else None
+        if isinstance(data, dict) and data.get("id"):
+            return data  # まれに単一オブジェクトを返すサイトに対応
+        # 想定外（エラーJSON等）の応答は既存判定をスキップし、処理を継続する
+        print(f"    [注意] 投稿検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
         return None
 
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
@@ -657,6 +661,11 @@ def parse_args() -> argparse.Namespace:
         help="（非推奨）--write-mode upsert と同じ。後方互換のため残置",
     )
     parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
+    parser.add_argument(
+        "--category",
+        default="",
+        help="全記事のカテゴリをこの値に統一する（Excelの WPカテゴリ 列を無視）。例: ブログ",
+    )
     parser.add_argument(
         "--update-excel",
         action="store_true",
@@ -756,7 +765,11 @@ def main() -> int:
         explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
         slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
         excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
-        category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
+        if args.category.strip():
+            # --category 指定時は全記事のカテゴリをこの値に統一（Excelの列を無視）
+            category_names = split_terms(args.category)
+        else:
+            category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
         tag_names = split_terms(safe_str(row.get(col["tag"])) if col["tag"] else "")
         image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
         alt_text = safe_str(row.get(col["alt"])) if col["alt"] else ""
