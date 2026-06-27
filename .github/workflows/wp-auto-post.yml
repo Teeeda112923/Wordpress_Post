@@ -44,6 +44,11 @@ on:
         type: string
         required: true
         default: "制作管理表"
+      category:
+        description: "全記事のカテゴリを統一（空ならExcelのWPカテゴリ列を使用）"
+        type: string
+        required: false
+        default: "ブログ"
       update_excel:
         description: "投稿結果を制作管理表(Excel)へ書き戻してコミットする"
         type: boolean
@@ -101,6 +106,7 @@ jobs:
             --images-dir eyecatches \
             --post-status "${{ inputs.post_status }}" \
             --write-mode "${{ inputs.write_mode }}" \
+            --category "${{ inputs.category }}" \
             --limit "${{ inputs.limit }}" \
             --output-dir results \
             $DRY_RUN_FLAG $UPDATE_EXCEL_FLAG

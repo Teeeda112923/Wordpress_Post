@@ -662,6 +662,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
     parser.add_argument(
+        "--category",
+        default="",
+        help="全記事のカテゴリをこの値に統一する（Excelの WPカテゴリ 列を無視）。例: ブログ",
+    )
+    parser.add_argument(
         "--update-excel",
         action="store_true",
         help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
@@ -760,7 +765,11 @@ def main() -> int:
         explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
         slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
         excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
-        category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
+        if args.category.strip():
+            # --category 指定時は全記事のカテゴリをこの値に統一（Excelの列を無視）
+            category_names = split_terms(args.category)
+        else:
+            category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
         tag_names = split_terms(safe_str(row.get(col["tag"])) if col["tag"] else "")
         image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
         alt_text = safe_str(row.get(col["alt"])) if col["alt"] else ""
