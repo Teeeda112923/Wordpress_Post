@@ -553,7 +553,7 @@ class WordPressClient:
         endpoint = "categories" if taxonomy == "category" else "tags"
         data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
         term_id = 0
-        for item in data or []:
+        for item in (data if isinstance(data, list) else []):
             if safe_str(item.get("name")).lower() == name.lower():
                 term_id = int(item["id"])
                 break
@@ -575,8 +575,12 @@ class WordPressClient:
             "per_page": 10,
         }
         data = self.request("GET", "posts", params=params)
-        if data:
-            return data[0]
+        if isinstance(data, list):
+            return data[0] if data else None
+        if isinstance(data, dict) and data.get("id"):
+            return data  # まれに単一オブジェクトを返すサイトに対応
+        # 想定外（エラーJSON等）の応答は既存判定をスキップし、処理を継続する
+        print(f"    [注意] 投稿検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
         return None
 
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
