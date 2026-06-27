@@ -200,8 +200,31 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-retries", type=int, default=2, help="リトライ最大回数")
     p.add_argument("--extra-instructions", default="",
                    help="全Noのプロンプト末尾に追記する自由指示（スタイル微調整用）")
+    p.add_argument("--md-priority", action="store_true",
+                   help="articles/{No3桁}.md があれば、その記事本文を最優先コンテキストとして使う")
+    p.add_argument("--md-dir", default="articles", help="記事 Markdown のディレクトリ")
     p.add_argument("--dry-run", action="store_true", help="API を呼ばず対象と保存先だけ表示する")
     return p.parse_args()
+
+
+def md_to_brief(md_text: str, max_chars: int = 3500) -> str:
+    """記事 Markdown を画像プロンプト用の簡潔なテキストに整える（タグ/リンク/罫線除去）。"""
+    import re as _re
+    t = _re.sub(r"<[^>]+>", "", md_text)                 # HTMLタグ除去
+    t = _re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)       # [text](url) -> text
+    t = _re.sub(r"https?://\S+", "", t)                   # 生URL除去
+    t = _re.sub(r"^\s*\|.*\|\s*$", "", t, flags=_re.M)    # 表の行を除去
+    t = _re.sub(r"[#*>`]", "", t)                          # md記号除去
+    t = _re.sub(r"\n{3,}", "\n\n", t).strip()
+    return t[:max_chars]
+
+
+def load_md_for_no(md_dir: Path, no: int) -> str:
+    for name in (f"{no:03d}.md", f"{no}.md"):
+        p = md_dir / name
+        if p.exists():
+            return md_to_brief(p.read_text(encoding="utf-8"))
+    return ""
 
 
 def main() -> int:
@@ -286,7 +309,23 @@ def main() -> int:
             print(f"[SKIP] {no:03d} {out_path} 既存（--force で上書き）")
             continue
 
-        full_prompt = prompt + PROMPT_SUFFIX
+        # MD最優先: 記事本文があれば最上部に「最優先コンテキスト」として差し込む
+        md_brief = load_md_for_no(Path(args.md_dir), no) if args.md_priority else ""
+        if args.md_priority and not md_brief:
+            print(f"    [注意] {no:03d}: articles に MD が見つからず Excel の完成プロンプトのみ使用")
+
+        full_prompt = ""
+        if md_brief:
+            full_prompt += (
+                f"# 最優先コンテキスト（No{no:03d}「{title}」の記事本文）\n"
+                "このアイキャッチは下記の記事本文の内容に厳密に基づいて作成すること。\n"
+                "別No・別テーマ・過去に生成した別画像の内容を混ぜないこと。\n"
+                "----- 記事本文ここから -----\n"
+                f"{md_brief}\n"
+                "----- 記事本文ここまで -----\n\n"
+                "# レイアウト・コピー指示（同じNoの完成プロンプト）\n"
+            )
+        full_prompt += prompt + PROMPT_SUFFIX
         if args.extra_instructions.strip():
             full_prompt += "\n\n# このバッチの追加指示\n" + args.extra_instructions.strip() + "\n"
 
