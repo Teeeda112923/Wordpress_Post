@@ -49,6 +49,11 @@ on:
         type: string
         required: false
         default: "ブログ"
+      nos:
+        description: "投稿するNoを範囲指定（例: 2-10,13-15）。空なら全件（limitに従う）"
+        type: string
+        required: false
+        default: ""
       update_excel:
         description: "投稿結果を制作管理表(Excel)へ書き戻してコミットする"
         type: boolean
@@ -107,6 +112,7 @@ jobs:
             --post-status "${{ inputs.post_status }}" \
             --write-mode "${{ inputs.write_mode }}" \
             --category "${{ inputs.category }}" \
+            --nos "${{ inputs.nos }}" \
             --limit "${{ inputs.limit }}" \
             --output-dir results \
             $DRY_RUN_FLAG $UPDATE_EXCEL_FLAG

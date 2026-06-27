@@ -145,6 +145,35 @@ def make_slug(text: str, fallback: str) -> str:
     return value or fallback
 
 
+def parse_no_spec(spec: str) -> set[int] | None:
+    """"2-10,13-15,20" のような指定を No の集合に展開する。空なら None（全件）。"""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    result: set[int] = set()
+    for part in re.split(r"[,、\s]+", spec):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^(\d+)\s*[-~〜]\s*(\d+)$", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            result.update(range(min(a, b), max(a, b) + 1))
+        elif part.isdigit():
+            result.add(int(part))
+    return result or None
+
+
+def no_to_int(no_value: Any) -> int | None:
+    s = safe_str(no_value)
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
 def row_no_to_names(no_value: str) -> list[str]:
     raw = safe_str(no_value)
     if not raw:
@@ -154,6 +183,98 @@ def row_no_to_names(no_value: str) -> list[str]:
         return [f"{number:03d}", str(number)]
     except ValueError:
         return [raw]
+
+
+_VOID_TAGS = {"br", "hr", "img", "input", "meta", "link", "area", "base",
+              "col", "embed", "source", "track", "wbr"}
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9]+)([^>]*?)(/?)>")
+
+
+def _split_top_level(html: str) -> list[tuple[str, str]]:
+    """HTML をトップレベル要素ごとに (タグ名, 要素HTML) のリストに分割する。"""
+    elements: list[tuple[str, str]] = []
+    depth = 0
+    start: int | None = None
+    cur_tag = ""
+    for m in _TAG_RE.finditer(html):
+        closing = m.group(1) == "/"
+        tag = m.group(2).lower()
+        selfclose = bool(m.group(4)) or tag in _VOID_TAGS
+        if depth == 0 and not closing:
+            start = m.start()
+            cur_tag = tag
+            if selfclose:
+                elements.append((tag, html[start:m.end()]))
+                start = None
+            else:
+                depth = 1
+        elif not closing and not selfclose:
+            depth += 1
+        elif closing:
+            depth -= 1
+            if depth == 0 and start is not None:
+                elements.append((cur_tag, html[start:m.end()]))
+                start = None
+    return elements
+
+
+def html_to_gutenberg_blocks(html: str) -> str:
+    """Markdown 由来の HTML を Gutenberg ブロックマークアップへ変換する。
+
+    これにより WordPress 投稿時に「無効なブロック（ブロックを解除）」の警告を防ぐ。
+    対応: 段落 / 見出し / リスト / 表 / 引用 / 区切り線。未知要素は HTML ブロックで包む。
+    """
+    blocks: list[str] = []
+    for tag, el in _split_top_level(html):
+        el = el.strip()
+        if not el:
+            continue
+        if tag == "p":
+            blocks.append(f"<!-- wp:paragraph -->\n{el}\n<!-- /wp:paragraph -->")
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            level = int(tag[1])
+            m = re.match(r"<h[1-6][^>]*>(.*)</h[1-6]>\s*$", el, re.S)
+            inner = m.group(1) if m else el
+            attr = "" if level == 2 else f' {{"level":{level}}}'
+            blocks.append(
+                f"<!-- wp:heading{attr} -->\n"
+                f'<h{level} class="wp-block-heading">{inner}</h{level}>\n'
+                f"<!-- /wp:heading -->"
+            )
+        elif tag in ("ul", "ol"):
+            ordered = tag == "ol"
+            items = re.findall(r"<li[^>]*>(.*?)</li>", el, re.S)
+            li_html = "".join(
+                f"<!-- wp:list-item -->\n<li>{it.strip()}</li>\n<!-- /wp:list-item -->\n"
+                for it in items
+            )
+            list_attr = ' {"ordered":true}' if ordered else ""
+            list_tag = "ol" if ordered else "ul"
+            blocks.append(
+                f"<!-- wp:list{list_attr} -->\n"
+                f'<{list_tag} class="wp-block-list">\n{li_html}</{list_tag}>\n'
+                f"<!-- /wp:list -->"
+            )
+        elif tag == "table":
+            blocks.append(
+                "<!-- wp:table -->\n"
+                f'<figure class="wp-block-table">{el}</figure>\n'
+                "<!-- /wp:table -->"
+            )
+        elif tag == "blockquote":
+            blocks.append(f"<!-- wp:quote -->\n{el}\n<!-- /wp:quote -->")
+        elif tag == "hr":
+            blocks.append(
+                '<!-- wp:separator -->\n'
+                '<hr class="wp-block-separator has-alpha-channel-opacity"/>\n'
+                "<!-- /wp:separator -->"
+            )
+        elif tag == "pre":
+            blocks.append(f"<!-- wp:code -->\n{el}\n<!-- /wp:code -->")
+        else:
+            # div など想定外の生 HTML は HTML ブロックで包む（解除警告を回避）
+            blocks.append(f"<!-- wp:html -->\n{el}\n<!-- /wp:html -->")
+    return "\n\n".join(blocks)
 
 
 def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
@@ -667,6 +788,16 @@ def parse_args() -> argparse.Namespace:
         help="全記事のカテゴリをこの値に統一する（Excelの WPカテゴリ 列を無視）。例: ブログ",
     )
     parser.add_argument(
+        "--nos",
+        default="",
+        help="投稿する No を範囲・カンマで指定。例: 2-10,13-15,20（空なら全件）",
+    )
+    parser.add_argument(
+        "--no-gutenberg-blocks",
+        action="store_true",
+        help="本文を Gutenberg ブロックに変換せず HTML のまま投稿する（既定は変換）",
+    )
+    parser.add_argument(
         "--update-excel",
         action="store_true",
         help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
@@ -745,6 +876,11 @@ def main() -> int:
         else:
             print("  [注意] 認証情報が無いため dry-run では既存有無を判定しません。")
 
+    no_filter = parse_no_spec(args.nos)
+    if no_filter is not None:
+        rng = ",".join(str(n) for n in sorted(no_filter))
+        print(f"  対象No指定: {rng}")
+
     results: list[dict[str, Any]] = []
     processed = 0
 
@@ -755,6 +891,12 @@ def main() -> int:
         no_value = safe_str(row.get(col["no"])) if col["no"] else str(idx + 1)
         if not no_value:
             no_value = str(idx + 1)
+
+        # --nos 指定時は対象 No 以外をスキップ
+        if no_filter is not None:
+            n_int = no_to_int(no_value)
+            if n_int is None or n_int not in no_filter:
+                continue
         kw = safe_str(row.get(col["kw"])) if col["kw"] else ""
         title = safe_str(row.get(col["title"])) if col["title"] else ""
         if not title:
@@ -882,15 +1024,19 @@ def main() -> int:
             category_ids = [i for i in (wp.find_or_create_term("category", n) for n in category_names) if i]
             tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
 
+            # 本文を Gutenberg ブロックへ変換（「ブロックを解除」警告の回避）
+            body_html = content_html if args.no_gutenberg_blocks \
+                else html_to_gutenberg_blocks(content_html)
+
             # 画像がある場合のみアップロードして featured_media を差し替える。
             # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
             featured_media: int | None = None
-            post_content = content_html
+            post_content = body_html
             if image_path:
                 featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
                 # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
                 if not args.no_inline_eyecatch and media_url:
-                    post_content = build_image_block(media_url, alt_text) + content_html
+                    post_content = build_image_block(media_url, alt_text) + body_html
 
             created = wp.create_post(
                 title=title,
