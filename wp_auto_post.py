@@ -164,6 +164,28 @@ def parse_no_spec(spec: str) -> set[int] | None:
     return result or None
 
 
+def detect_duplicate_slugs(df: "pd.DataFrame", col: dict[str, str | None]) -> dict[str, list[str]]:
+    """管理表の各行から投稿スラッグを算出し、重複しているスラッグを返す。
+
+    戻り値は {スラッグ: [No, No, ...]}（2件以上重複したものだけ）。投稿ループと
+    同じ規則（スラッグ列があればそれ、無ければタイトル）でスラッグを計算する。
+    """
+    by_slug: dict[str, list[str]] = {}
+    for idx, row in df.iterrows():
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(int(idx) + 1)
+        if not no_value:
+            no_value = str(int(idx) + 1)
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        if not title and col["kw"]:
+            title = safe_str(row.get(col["kw"]))
+        if not title:
+            continue
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        by_slug.setdefault(slug, []).append(no_value)
+    return {slug: nos for slug, nos in by_slug.items() if len(nos) > 1}
+
+
 def no_to_int(no_value: Any) -> int | None:
     s = safe_str(no_value)
     if not s:
@@ -880,6 +902,14 @@ def main() -> int:
     if no_filter is not None:
         rng = ",".join(str(n) for n in sorted(no_filter))
         print(f"  対象No指定: {rng}")
+
+    # スラッグ重複の検出（create_only で後勝ちの取りこぼしを防ぐための警告）
+    dup_slugs = detect_duplicate_slugs(df, col)
+    if dup_slugs:
+        print("  [警告] 管理表にスラッグの重複があります。create_only では後から処理する記事がスキップされます。")
+        for slug, nos in dup_slugs.items():
+            print(f"    スラッグ重複: {slug} (No.{', No.'.join(nos)})")
+        print("    → 重複したスラッグを一意に変更してください。")
 
     results: list[dict[str, Any]] = []
     processed = 0
