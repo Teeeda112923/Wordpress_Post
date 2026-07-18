@@ -760,6 +760,7 @@ class WordPressClient:
         tag_ids: list[int],
         featured_media: int | None,
         post_id: int | None = None,
+        focus_keyword: str = "",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "title": title,
@@ -774,8 +775,34 @@ class WordPressClient:
             payload["tags"] = tag_ids
         if featured_media:
             payload["featured_media"] = featured_media
+        # Rank Math フォーカスキーワード（重要なキーワード）を設定する。
+        # ※ WP 側で rank_math_focus_keyword が show_in_rest=true 登録されている
+        #    場合のみ保存される（未登録だと WordPress 側で無視される）。
+        if focus_keyword:
+            payload["meta"] = {"rank_math_focus_keyword": focus_keyword}
         endpoint = f"posts/{post_id}" if post_id else "posts"
         return self.request("POST", endpoint, json=payload)
+
+
+# --------------------------------------------------------------------------- #
+# Rank Math フォーカスキーワード
+# --------------------------------------------------------------------------- #
+def derive_focus_keyword(kw: str, title: str) -> str:
+    """Rank Math のフォーカスキーワード（重要なキーワード）を決める。
+
+    タイトルに入っている記事のキーワードを使う。
+      1. 指定KW があればそれを使う（前後空白を除去）
+      2. 空の場合はタイトルの主要部（区切り記号より前）を使う
+    """
+    kw = safe_str(kw)
+    if kw:
+        return kw
+    # タイトルの区切り記号（｜ | ／ / ： :）より前をキーワードとして使う
+    head = title
+    for sep in ("｜", "|", "／", "/", "：", ":", "〖", "【"):
+        if sep in head:
+            head = head.split(sep, 1)[0]
+    return head.strip()
 
 
 # --------------------------------------------------------------------------- #
@@ -1068,6 +1095,7 @@ def main() -> int:
                 if not args.no_inline_eyecatch and media_url:
                     post_content = build_image_block(media_url, alt_text) + body_html
 
+            focus_keyword = derive_focus_keyword(kw, title)
             created = wp.create_post(
                 title=title,
                 content_html=post_content,
@@ -1078,7 +1106,10 @@ def main() -> int:
                 tag_ids=tag_ids,
                 featured_media=featured_media,
                 post_id=post_id_to_update,
+                focus_keyword=focus_keyword,
             )
+            if focus_keyword:
+                print(f"  focus_keyword: {focus_keyword}")
 
             now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             result["post_id"] = created.get("id", "")
