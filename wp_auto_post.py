@@ -726,6 +726,32 @@ class WordPressClient:
         print(f"    [注意] 投稿検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
         return None
 
+    def find_post_by_title(self, title: str, status: str) -> dict[str, Any] | None:
+        """タイトル完全一致で既存投稿を探す。
+
+        下書き/保留は post_name（slug）が空になりがちで find_post_by_slug では
+        見つからないため、そのフォールバックとして使う。
+        """
+        if not title:
+            return None
+        params = {
+            "search": title,
+            "status": "publish,future,draft,pending,private",
+            "context": "edit",
+            "per_page": 20,
+        }
+        data = self.request("GET", "posts", params=params)
+        if not isinstance(data, list):
+            return None
+        target = title.strip()
+        for post in data:
+            title_obj = post.get("title") or {}
+            raw = safe_str(title_obj.get("raw"))
+            rendered = safe_str(title_obj.get("rendered"))
+            if target in (raw, rendered):
+                return post
+        return None
+
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
         """画像をアップロードし (media_id, source_url) を返す。"""
         mime_type, _ = mimetypes.guess_type(str(image_path))
@@ -1032,6 +1058,9 @@ def main() -> int:
 
         # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
         existing = wp.find_post_by_slug(slug, args.post_status) if wp else None
+        # slug が空になりがちな下書き等はタイトル完全一致でフォールバック検索する
+        if wp and not existing:
+            existing = wp.find_post_by_title(title, args.post_status)
         existence_known = wp is not None
         if not existence_known:
             existence_note = "既存不明(認証なし)"
