@@ -1,0 +1,33 @@
+name: Materialize WordPress Security Workbook
+
+on:
+  push:
+    paths:
+      - "data/wordpress-security-production.tail.gz.b64.part03"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Decode workbook
+        run: |
+          cat data/wordpress-security-production.xlsx.b64.part0[1-6] > /tmp/wordpress-security-production.xlsx.b64
+          cat data/wordpress-security-production.tail.gz.b64.part* | base64 --decode | gzip --decompress >> /tmp/wordpress-security-production.xlsx.b64
+          base64 --decode /tmp/wordpress-security-production.xlsx.b64 > data/wordpress-security-production.xlsx
+          unzip -t data/wordpress-security-production.xlsx
+
+      - name: Commit workbook
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/wordpress-security-production.xlsx
+          git rm data/wordpress-security-production.xlsx.b64.part0[1-6]
+          git rm data/wordpress-security-production.tail.gz.b64.part*
+          git commit -m "Add WordPress security production workbook [skip ci]"
+          git push

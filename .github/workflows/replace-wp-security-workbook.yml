@@ -1,0 +1,51 @@
+name: Replace WordPress Security Workbook
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "data/.workbook-replace-ready"
+
+permissions:
+  contents: write
+
+jobs:
+  replace:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Rebuild revised workbook
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+
+          parts = sorted(Path('data/.workbook-payload').glob('wordpress-security-production.a85.part*'))
+          if len(parts) != 10:
+              raise SystemExit(f'Expected 10 payload parts, found {len(parts)}')
+
+          encoded = ''.join(part.read_text(encoding='utf-8') for part in parts)
+          data = base64.a85decode(encoded.encode('ascii'))
+          digest = hashlib.sha256(data).hexdigest()
+          expected = '15b5e54ef20fd8962e8fcd440e5d7057a94544346eef9bb545a94dcfbbede59d'
+          if digest != expected:
+              raise SystemExit(f'SHA-256 mismatch: {digest}')
+
+          Path('data/wordpress-security-production.xlsx').write_bytes(data)
+          PY
+          unzip -t data/wordpress-security-production.xlsx
+
+      - name: Commit replacement and remove payload
+        shell: bash
+        run: |
+          rm -rf data/.workbook-payload data/.workbook-replace-ready
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/wordpress-security-production.xlsx data/.workbook-payload data/.workbook-replace-ready
+          git commit -m "Update WordPress security production workbook [skip ci]"
+          git push

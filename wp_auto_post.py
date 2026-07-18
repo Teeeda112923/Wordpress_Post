@@ -145,6 +145,57 @@ def make_slug(text: str, fallback: str) -> str:
     return value or fallback
 
 
+def parse_no_spec(spec: str) -> set[int] | None:
+    """"2-10,13-15,20" のような指定を No の集合に展開する。空なら None（全件）。"""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    result: set[int] = set()
+    for part in re.split(r"[,、\s]+", spec):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^(\d+)\s*[-~〜]\s*(\d+)$", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            result.update(range(min(a, b), max(a, b) + 1))
+        elif part.isdigit():
+            result.add(int(part))
+    return result or None
+
+
+def detect_duplicate_slugs(df: "pd.DataFrame", col: dict[str, str | None]) -> dict[str, list[str]]:
+    """管理表の各行から投稿スラッグを算出し、重複しているスラッグを返す。
+
+    戻り値は {スラッグ: [No, No, ...]}（2件以上重複したものだけ）。投稿ループと
+    同じ規則（スラッグ列があればそれ、無ければタイトル）でスラッグを計算する。
+    """
+    by_slug: dict[str, list[str]] = {}
+    for idx, row in df.iterrows():
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(int(idx) + 1)
+        if not no_value:
+            no_value = str(int(idx) + 1)
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        if not title and col["kw"]:
+            title = safe_str(row.get(col["kw"]))
+        if not title:
+            continue
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        by_slug.setdefault(slug, []).append(no_value)
+    return {slug: nos for slug, nos in by_slug.items() if len(nos) > 1}
+
+
+def no_to_int(no_value: Any) -> int | None:
+    s = safe_str(no_value)
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
 def row_no_to_names(no_value: str) -> list[str]:
     raw = safe_str(no_value)
     if not raw:
@@ -154,6 +205,98 @@ def row_no_to_names(no_value: str) -> list[str]:
         return [f"{number:03d}", str(number)]
     except ValueError:
         return [raw]
+
+
+_VOID_TAGS = {"br", "hr", "img", "input", "meta", "link", "area", "base",
+              "col", "embed", "source", "track", "wbr"}
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9]+)([^>]*?)(/?)>")
+
+
+def _split_top_level(html: str) -> list[tuple[str, str]]:
+    """HTML をトップレベル要素ごとに (タグ名, 要素HTML) のリストに分割する。"""
+    elements: list[tuple[str, str]] = []
+    depth = 0
+    start: int | None = None
+    cur_tag = ""
+    for m in _TAG_RE.finditer(html):
+        closing = m.group(1) == "/"
+        tag = m.group(2).lower()
+        selfclose = bool(m.group(4)) or tag in _VOID_TAGS
+        if depth == 0 and not closing:
+            start = m.start()
+            cur_tag = tag
+            if selfclose:
+                elements.append((tag, html[start:m.end()]))
+                start = None
+            else:
+                depth = 1
+        elif not closing and not selfclose:
+            depth += 1
+        elif closing:
+            depth -= 1
+            if depth == 0 and start is not None:
+                elements.append((cur_tag, html[start:m.end()]))
+                start = None
+    return elements
+
+
+def html_to_gutenberg_blocks(html: str) -> str:
+    """Markdown 由来の HTML を Gutenberg ブロックマークアップへ変換する。
+
+    これにより WordPress 投稿時に「無効なブロック（ブロックを解除）」の警告を防ぐ。
+    対応: 段落 / 見出し / リスト / 表 / 引用 / 区切り線。未知要素は HTML ブロックで包む。
+    """
+    blocks: list[str] = []
+    for tag, el in _split_top_level(html):
+        el = el.strip()
+        if not el:
+            continue
+        if tag == "p":
+            blocks.append(f"<!-- wp:paragraph -->\n{el}\n<!-- /wp:paragraph -->")
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            level = int(tag[1])
+            m = re.match(r"<h[1-6][^>]*>(.*)</h[1-6]>\s*$", el, re.S)
+            inner = m.group(1) if m else el
+            attr = "" if level == 2 else f' {{"level":{level}}}'
+            blocks.append(
+                f"<!-- wp:heading{attr} -->\n"
+                f'<h{level} class="wp-block-heading">{inner}</h{level}>\n'
+                f"<!-- /wp:heading -->"
+            )
+        elif tag in ("ul", "ol"):
+            ordered = tag == "ol"
+            items = re.findall(r"<li[^>]*>(.*?)</li>", el, re.S)
+            li_html = "".join(
+                f"<!-- wp:list-item -->\n<li>{it.strip()}</li>\n<!-- /wp:list-item -->\n"
+                for it in items
+            )
+            list_attr = ' {"ordered":true}' if ordered else ""
+            list_tag = "ol" if ordered else "ul"
+            blocks.append(
+                f"<!-- wp:list{list_attr} -->\n"
+                f'<{list_tag} class="wp-block-list">\n{li_html}</{list_tag}>\n'
+                f"<!-- /wp:list -->"
+            )
+        elif tag == "table":
+            blocks.append(
+                "<!-- wp:table -->\n"
+                f'<figure class="wp-block-table">{el}</figure>\n'
+                "<!-- /wp:table -->"
+            )
+        elif tag == "blockquote":
+            blocks.append(f"<!-- wp:quote -->\n{el}\n<!-- /wp:quote -->")
+        elif tag == "hr":
+            blocks.append(
+                '<!-- wp:separator -->\n'
+                '<hr class="wp-block-separator has-alpha-channel-opacity"/>\n'
+                "<!-- /wp:separator -->"
+            )
+        elif tag == "pre":
+            blocks.append(f"<!-- wp:code -->\n{el}\n<!-- /wp:code -->")
+        else:
+            # div など想定外の生 HTML は HTML ブロックで包む（解除警告を回避）
+            blocks.append(f"<!-- wp:html -->\n{el}\n<!-- /wp:html -->")
+    return "\n\n".join(blocks)
 
 
 def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
@@ -177,6 +320,20 @@ def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
     if strip_h1:
         html = strip_leading_html_h1(html)
     return html
+
+
+def build_image_block(image_url: str, alt_text: str) -> str:
+    """本文先頭に差し込むアイキャッチ画像の HTML（Gutenberg 画像ブロック）を返す。"""
+    import html as _html
+
+    safe_url = _html.escape(image_url, quote=True)
+    safe_alt = _html.escape(alt_text or "", quote=True)
+    return (
+        "<!-- wp:image {\"sizeSlug\":\"large\"} -->\n"
+        f'<figure class="wp-block-image size-large">'
+        f'<img src="{safe_url}" alt="{safe_alt}"/></figure>\n'
+        "<!-- /wp:image -->\n\n"
+    )
 
 
 def strip_leading_markdown_h1(text: str) -> str:
@@ -539,7 +696,7 @@ class WordPressClient:
         endpoint = "categories" if taxonomy == "category" else "tags"
         data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
         term_id = 0
-        for item in data or []:
+        for item in (data if isinstance(data, list) else []):
             if safe_str(item.get("name")).lower() == name.lower():
                 term_id = int(item["id"])
                 break
@@ -561,11 +718,16 @@ class WordPressClient:
             "per_page": 10,
         }
         data = self.request("GET", "posts", params=params)
-        if data:
-            return data[0]
+        if isinstance(data, list):
+            return data[0] if data else None
+        if isinstance(data, dict) and data.get("id"):
+            return data  # まれに単一オブジェクトを返すサイトに対応
+        # 想定外（エラーJSON等）の応答は既存判定をスキップし、処理を継続する
+        print(f"    [注意] 投稿検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
         return None
 
-    def upload_media(self, image_path: Path, alt_text: str = "") -> int:
+    def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
+        """画像をアップロードし (media_id, source_url) を返す。"""
         mime_type, _ = mimetypes.guess_type(str(image_path))
         if not mime_type:
             mime_type = "application/octet-stream"
@@ -579,10 +741,12 @@ class WordPressClient:
             )
         if response.status_code >= 400:
             raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
-        media_id = int(response.json()["id"])
+        media = response.json()
+        media_id = int(media["id"])
+        source_url = media.get("source_url", "")
         if alt_text:
             self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
-        return media_id
+        return media_id, source_url
 
     def create_post(
         self,
@@ -641,6 +805,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
     parser.add_argument(
+        "--category",
+        default="",
+        help="全記事のカテゴリをこの値に統一する（Excelの WPカテゴリ 列を無視）。例: ブログ",
+    )
+    parser.add_argument(
+        "--nos",
+        default="",
+        help="投稿する No を範囲・カンマで指定。例: 2-10,13-15,20（空なら全件）",
+    )
+    parser.add_argument(
+        "--no-gutenberg-blocks",
+        action="store_true",
+        help="本文を Gutenberg ブロックに変換せず HTML のまま投稿する（既定は変換）",
+    )
+    parser.add_argument(
         "--update-excel",
         action="store_true",
         help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
@@ -649,6 +828,11 @@ def parse_args() -> argparse.Namespace:
         "--check-images-only",
         action="store_true",
         help="WordPress 投稿を行わず、アイキャッチ画像のチェック結果だけを出力する",
+    )
+    parser.add_argument(
+        "--no-inline-eyecatch",
+        action="store_true",
+        help="アイキャッチ画像を本文先頭に差し込まない（既定は差し込む）",
     )
     return parser.parse_args()
 
@@ -714,6 +898,19 @@ def main() -> int:
         else:
             print("  [注意] 認証情報が無いため dry-run では既存有無を判定しません。")
 
+    no_filter = parse_no_spec(args.nos)
+    if no_filter is not None:
+        rng = ",".join(str(n) for n in sorted(no_filter))
+        print(f"  対象No指定: {rng}")
+
+    # スラッグ重複の検出（create_only で後勝ちの取りこぼしを防ぐための警告）
+    dup_slugs = detect_duplicate_slugs(df, col)
+    if dup_slugs:
+        print("  [警告] 管理表にスラッグの重複があります。create_only では後から処理する記事がスキップされます。")
+        for slug, nos in dup_slugs.items():
+            print(f"    スラッグ重複: {slug} (No.{', No.'.join(nos)})")
+        print("    → 重複したスラッグを一意に変更してください。")
+
     results: list[dict[str, Any]] = []
     processed = 0
 
@@ -724,6 +921,12 @@ def main() -> int:
         no_value = safe_str(row.get(col["no"])) if col["no"] else str(idx + 1)
         if not no_value:
             no_value = str(idx + 1)
+
+        # --nos 指定時は対象 No 以外をスキップ
+        if no_filter is not None:
+            n_int = no_to_int(no_value)
+            if n_int is None or n_int not in no_filter:
+                continue
         kw = safe_str(row.get(col["kw"])) if col["kw"] else ""
         title = safe_str(row.get(col["title"])) if col["title"] else ""
         if not title:
@@ -734,7 +937,11 @@ def main() -> int:
         explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
         slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
         excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
-        category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
+        if args.category.strip():
+            # --category 指定時は全記事のカテゴリをこの値に統一（Excelの列を無視）
+            category_names = split_terms(args.category)
+        else:
+            category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
         tag_names = split_terms(safe_str(row.get(col["tag"])) if col["tag"] else "")
         image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
         alt_text = safe_str(row.get(col["alt"])) if col["alt"] else ""
@@ -847,15 +1054,23 @@ def main() -> int:
             category_ids = [i for i in (wp.find_or_create_term("category", n) for n in category_names) if i]
             tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
 
+            # 本文を Gutenberg ブロックへ変換（「ブロックを解除」警告の回避）
+            body_html = content_html if args.no_gutenberg_blocks \
+                else html_to_gutenberg_blocks(content_html)
+
             # 画像がある場合のみアップロードして featured_media を差し替える。
             # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
             featured_media: int | None = None
+            post_content = body_html
             if image_path:
-                featured_media = wp.upload_media(image_path, alt_text=alt_text)
+                featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
+                # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
+                if not args.no_inline_eyecatch and media_url:
+                    post_content = build_image_block(media_url, alt_text) + body_html
 
             created = wp.create_post(
                 title=title,
-                content_html=content_html,
+                content_html=post_content,
                 slug=slug,
                 excerpt=excerpt,
                 status=args.post_status,
