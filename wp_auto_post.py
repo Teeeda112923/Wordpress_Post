@@ -309,7 +309,7 @@ def html_to_gutenberg_blocks(html: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# 本文の補正（FAQ改行 / 内部リンク）
+# 本文の補正（FAQ改行 / 内部リンク / 参考リンク / KW表記）
 # --------------------------------------------------------------------------- #
 _FAQ_QA_PATTERN = re.compile(r"(\*\*Q[^\n]*\*\*)\n(A[.．])")
 
@@ -317,6 +317,50 @@ _INTERNAL_LINK_COMMENT = re.compile(
     r"<!--\s*内部リンク候補[：:]\s*No\.?\s*0*(\d+)「[^」]*」\s*[／/]\s*"
     r"アンカーテキスト「([^」]*)」\s*-->"
 )
+
+_BLOGCARD_PLACEHOLDER = re.compile(
+    r"<!-- wp:paragraph -->\s*<p>%%BLOGCARD:([^%<]+)%%</p>\s*<!-- /wp:paragraph -->"
+)
+
+# 参考情報のリンク先（正規URL）。行テキストに「キー」を含めばそのURLでリンク化する。
+# より具体的なキーを上に置く（先に一致したものを採用）。
+REFERENCE_URLS: list[tuple[str, str]] = [
+    ("CyberNote Security Checker", "https://wordpress.org/plugins/cybernote-security-checker/"),
+    ("Wordfence Security", "https://wordpress.org/plugins/wordfence/"),
+    ("Wordfence 公式「Pricing」", "https://www.wordfence.com/products/"),
+    ("Wordfence", "https://wordpress.org/plugins/wordfence/"),
+    ("SiteGuard WP Plugin", "https://wordpress.org/plugins/siteguard/"),
+    ("Sucuri Security", "https://wordpress.org/plugins/sucuri-scanner/"),
+    ("All-In-One Security", "https://wordpress.org/plugins/all-in-one-wp-security-and-firewall/"),
+    ("BackWPup", "https://wordpress.org/plugins/backwpup/"),
+    ("UpdraftPlus", "https://wordpress.org/plugins/updraftplus/"),
+    ("WP 2FA", "https://wordpress.org/plugins/wp-2fa/"),
+    ("miniOrange 2FA", "https://wordpress.org/plugins/miniorange-2-factor-authentication/"),
+    ("Two Factor", "https://wordpress.org/plugins/two-factor/"),
+    ("Contact Form 7", "https://wordpress.org/plugins/contact-form-7/"),
+    ("Hardening WordPress", "https://developer.wordpress.org/advanced-administration/security/hardening/"),
+    ("Brute Force Attacks", "https://developer.wordpress.org/advanced-administration/security/brute-force/"),
+    ("Roles and Capabilities", "https://wordpress.org/documentation/article/roles-and-capabilities/"),
+    ("REST API Handbook", "https://developer.wordpress.org/rest-api/"),
+    ("Theme Developer Handbook", "https://developer.wordpress.org/themes/advanced-topics/security/"),
+    ("Upgrading WordPress", "https://developer.wordpress.org/advanced-administration/upgrade/upgrading-core/"),
+    ("自動バックグラウンド更新", "https://ja.wordpress.org/support/article/configuring-automatic-background-updates/"),
+    ("サイトヘルス", "https://ja.wordpress.org/support/article/site-health-screen/"),
+    ("FAQ My site was hacked", "https://developer.wordpress.org/advanced-administration/security/faq-my-site-was-hacked/"),
+    ("WordPress.org セキュリティリリース", "https://wordpress.org/news/category/security/"),
+    ("一般設定", "https://ja.wordpress.org/support/article/settings-general-screen/"),
+    ("PHP", "https://www.php.net/supported-versions.php"),
+    ("Patchstack", "https://patchstack.com/whitepaper/state-of-wordpress-security-in-2026/"),
+    ("WPScan Vulnerability Database", "https://wpscan.com/wordpresses/"),
+    ("JVN iPedia", "https://jvndb.jvn.jp/"),
+    ("情報セキュリティ白書", "https://www.ipa.go.jp/publish/wp-security/index.html"),
+    ("安全なウェブサイトの作り方", "https://www.ipa.go.jp/security/vuln/websecurity/index.html"),
+    ("Amazon Lightsail", "https://docs.aws.amazon.com/lightsail/"),
+    ("混合コンテンツ", "https://web.dev/articles/what-is-mixed-content"),
+    ("MDN Web Docs", "https://developer.mozilla.org/ja/docs/Web/HTTP/Headers"),
+    ("エックスサーバー", "https://www.xserver.ne.jp/manual/"),
+    ("ロリポップ", "https://lolipop.jp/manual/"),
+]
 
 
 def fix_faq_linebreaks(md_text: str) -> str:
@@ -328,30 +372,86 @@ def fix_faq_linebreaks(md_text: str) -> str:
     return _FAQ_QA_PATTERN.sub(r"\1  \n\2", md_text)
 
 
+def normalize_keyword_wording(text: str) -> str:
+    """フォーカスKW（WordPressセキュリティ）と本文の表記を一致させる。
+
+    「WordPressのセキュリティ」は日本語として自然だが、Rank Math のキーワード
+    一致では「WordPressセキュリティ」と別物になり、密度・見出し・先頭判定が
+    通らない。意味の変わらない範囲で表記を寄せる。
+    """
+    return text.replace("WordPressのセキュリティ", "WordPressセキュリティ")
+
+
 def convert_internal_links(md_text: str, no_to_url: dict[int, str]) -> str:
-    """本文中の「内部リンク候補」コメントを、実際の内部リンク文へ置き換える。
+    """本文中の「内部リンク候補」コメントを、ブログカード用プレースホルダへ置換する。
 
-    例:
-      <!-- 内部リンク候補：No.24「…」／アンカーテキスト「脆弱性の確認と対処の手順」 -->
-      → 詳しくは「[脆弱性の確認と対処の手順](/wordpress-vulnerabilities/)」で解説しています。
-
-    対象Noが管理表に無い / スラッグ不明の場合はコメントごと削除する。
+    実際のブロック（cocoon-blocks/embed-blogcard）は Gutenberg 変換後に
+    inject_blogcards() で差し込む。ここでは対象スラッグを埋めた目印だけ置く。
+    対象Noが管理表に無い場合はコメントごと削除する。
     """
     def repl(m: "re.Match[str]") -> str:
         target_no = int(m.group(1))
-        anchor = m.group(2).strip()
-        url = no_to_url.get(target_no)
-        if not url or not anchor:
+        url_path = no_to_url.get(target_no)
+        if not url_path:
             return ""
-        return f"詳しくは「[{anchor}]({url})」で解説しています。"
+        return f"%%BLOGCARD:{url_path}%%"
 
     return _INTERNAL_LINK_COMMENT.sub(repl, md_text)
 
 
+def link_references(md_text: str) -> str:
+    """「## 参考情報」内の各項目を、既知の正規URLでリンク化する。"""
+    lines = md_text.split("\n")
+    in_ref = False
+    for i, line in enumerate(lines):
+        if re.match(r"^##\s", line):
+            in_ref = "参考情報" in line
+            continue
+        if not in_ref:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("-"):
+            continue
+        text = stripped[1:].strip()
+        if not text or "](" in text:  # 既にリンク済みはスキップ
+            continue
+        for key, url in REFERENCE_URLS:
+            if key in text:
+                indent = line[: len(line) - len(line.lstrip())]
+                lines[i] = f"{indent}- [{text}]({url})"
+                break
+    return "\n".join(lines)
+
+
+def build_blogcard_block(url: str) -> str:
+    """内部リンクを Cocoon のブログカード（メモボックス囲み）ブロックとして生成する。"""
+    return (
+        '<!-- wp:group {"className":"is-style-memo-box","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group is-style-memo-box">'
+        '<!-- wp:paragraph {"style":{"typography":{"textAlign":"left"}}} -->\n'
+        '<p class="has-text-align-left">▼ 詳しくはこちらを参考ください</p>\n'
+        '<!-- /wp:paragraph -->\n\n'
+        f'<!-- wp:cocoon-blocks/embed-blogcard {{"url":"{url}"}} /--></div>\n'
+        '<!-- /wp:group -->'
+    )
+
+
+def inject_blogcards(blocks_html: str, base_url: str) -> str:
+    """Gutenberg 変換後のプレースホルダ段落をブログカードブロックへ置き換える。"""
+    def repl(m: "re.Match[str]") -> str:
+        path = m.group(1)
+        url = base_url.rstrip("/") + "/" + path.lstrip("/")
+        return build_blogcard_block(url)
+
+    return _BLOGCARD_PLACEHOLDER.sub(repl, blocks_html)
+
+
 def enhance_article_markdown(md_text: str, no_to_url: dict[int, str]) -> str:
     """投稿前に本文Markdownへ加える補正をまとめて適用する。"""
+    md_text = normalize_keyword_wording(md_text)
     md_text = fix_faq_linebreaks(md_text)
     md_text = convert_internal_links(md_text, no_to_url)
+    md_text = link_references(md_text)
     return md_text
 
 
@@ -1117,6 +1217,8 @@ def main() -> int:
         explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
         slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
         excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
+        # メタ説明もフォーカスKWの表記に寄せる（Rank Mathのメタ判定対策）
+        excerpt = normalize_keyword_wording(excerpt)
         if args.category.strip():
             # --category 指定時は全記事のカテゴリをこの値に統一（Excelの列を無視）
             category_names = split_terms(args.category)
@@ -1243,6 +1345,8 @@ def main() -> int:
             # 本文を Gutenberg ブロックへ変換（「ブロックを解除」警告の回避）
             body_html = content_html if args.no_gutenberg_blocks \
                 else html_to_gutenberg_blocks(content_html)
+            # 内部リンクのプレースホルダを Cocoon ブログカードブロックへ差し替える
+            body_html = inject_blogcards(body_html, wp.base_url)
 
             # 画像がある場合のみアップロードして featured_media を差し替える。
             # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
