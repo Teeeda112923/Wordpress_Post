@@ -37,6 +37,15 @@ from requests.adapters import HTTPAdapter
 from slugify import slugify
 from urllib3.util.retry import Retry
 
+# ローカル実行時は同じフォルダの .env を自動で読み込む。
+# （GitHub Actions では Secrets が環境変数として渡るため、.env が無くても動く）
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    pass
+
 
 # --------------------------------------------------------------------------- #
 # 列名候補（用途 -> 候補リスト）。完全一致 -> 部分一致の順で柔軟に探索する。
