@@ -308,6 +308,53 @@ def html_to_gutenberg_blocks(html: str) -> str:
     return "\n\n".join(blocks)
 
 
+# --------------------------------------------------------------------------- #
+# 本文の補正（FAQ改行 / 内部リンク）
+# --------------------------------------------------------------------------- #
+_FAQ_QA_PATTERN = re.compile(r"(\*\*Q[^\n]*\*\*)\n(A[.．])")
+
+_INTERNAL_LINK_COMMENT = re.compile(
+    r"<!--\s*内部リンク候補[：:]\s*No\.?\s*0*(\d+)「[^」]*」\s*[／/]\s*"
+    r"アンカーテキスト「([^」]*)」\s*-->"
+)
+
+
+def fix_faq_linebreaks(md_text: str) -> str:
+    """よくある質問の「**Q…**」と「A…」を同じ段落内で改行させる。
+
+    Markdown では単一改行はスペース扱いになり Q と A が1行に連結される。
+    Q 行の末尾に半角スペース2つを補い、hard break（<br>）にする。
+    """
+    return _FAQ_QA_PATTERN.sub(r"\1  \n\2", md_text)
+
+
+def convert_internal_links(md_text: str, no_to_url: dict[int, str]) -> str:
+    """本文中の「内部リンク候補」コメントを、実際の内部リンク文へ置き換える。
+
+    例:
+      <!-- 内部リンク候補：No.24「…」／アンカーテキスト「脆弱性の確認と対処の手順」 -->
+      → 詳しくは「[脆弱性の確認と対処の手順](/wordpress-vulnerabilities/)」で解説しています。
+
+    対象Noが管理表に無い / スラッグ不明の場合はコメントごと削除する。
+    """
+    def repl(m: "re.Match[str]") -> str:
+        target_no = int(m.group(1))
+        anchor = m.group(2).strip()
+        url = no_to_url.get(target_no)
+        if not url or not anchor:
+            return ""
+        return f"詳しくは「[{anchor}]({url})」で解説しています。"
+
+    return _INTERNAL_LINK_COMMENT.sub(repl, md_text)
+
+
+def enhance_article_markdown(md_text: str, no_to_url: dict[int, str]) -> str:
+    """投稿前に本文Markdownへ加える補正をまとめて適用する。"""
+    md_text = fix_faq_linebreaks(md_text)
+    md_text = convert_internal_links(md_text, no_to_url)
+    return md_text
+
+
 def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
     """Markdown -> HTML。strip_h1=True なら本文先頭の H1 を無条件で除去する。
 
@@ -694,26 +741,49 @@ class WordPressClient:
         me = self.request("GET", "users/me")
         return me.get("name") or me.get("slug") or "(unknown)"
 
-    def find_or_create_term(self, taxonomy: str, name: str) -> int:
+    def find_or_create_term(self, taxonomy: str, name: str, parent: int = 0) -> int:
         name = name.strip()
         if not name:
             return 0
-        cache_key = (taxonomy, name.lower())
+        cache_key = (taxonomy, name.lower(), parent)
         if cache_key in self._term_cache:
             return self._term_cache[cache_key]
 
         endpoint = "categories" if taxonomy == "category" else "tags"
-        data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
+        params: dict[str, Any] = {"search": name, "per_page": 100}
+        if taxonomy == "category":
+            params["parent"] = parent
+        data = self.request("GET", endpoint, params=params)
         term_id = 0
         for item in (data if isinstance(data, list) else []):
-            if safe_str(item.get("name")).lower() == name.lower():
-                term_id = int(item["id"])
-                break
+            if safe_str(item.get("name")).lower() != name.lower():
+                continue
+            # カテゴリは親が一致するものだけ採用（同名の子を別親の下で誤用しない）
+            if taxonomy == "category" and int(item.get("parent", 0) or 0) != parent:
+                continue
+            term_id = int(item["id"])
+            break
         if not term_id:
-            created = self.request("POST", endpoint, json={"name": name})
+            body: dict[str, Any] = {"name": name}
+            if taxonomy == "category" and parent:
+                body["parent"] = parent
+            created = self.request("POST", endpoint, json=body)
             term_id = int(created["id"])
 
         self._term_cache[cache_key] = term_id
+        return term_id
+
+    def find_or_create_category_path(self, path_str: str) -> int:
+        """"親 > 子 > 孫" の形式を解釈し、親子関係を作って末端カテゴリのIDを返す。
+
+        区切りが無ければ単一カテゴリとして扱う。
+        """
+        parts = [p.strip() for p in re.split(r"[>＞›»＞]", path_str) if p.strip()]
+        parent = 0
+        term_id = 0
+        for name in parts:
+            term_id = self.find_or_create_term("category", name, parent=parent)
+            parent = term_id
         return term_id
 
     def find_post_by_slug(self, slug: str, status: str) -> dict[str, Any] | None:
@@ -796,6 +866,8 @@ class WordPressClient:
         featured_media: int | None,
         post_id: int | None = None,
         focus_keyword: str = "",
+        seo_title: str = "",
+        seo_description: str = "",
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "title": title,
@@ -810,11 +882,18 @@ class WordPressClient:
             payload["tags"] = tag_ids
         if featured_media:
             payload["featured_media"] = featured_media
-        # Rank Math フォーカスキーワード（重要なキーワード）を設定する。
-        # ※ WP 側で rank_math_focus_keyword が show_in_rest=true 登録されている
-        #    場合のみ保存される（未登録だと WordPress 側で無視される）。
+        # Rank Math メタ（重要なキーワード・SEOタイトル・メタ説明）を設定する。
+        # ※ WP 側で各メタが show_in_rest=true 登録されている場合のみ保存される
+        #    （未登録だと WordPress 側で無視される）。
+        meta: dict[str, Any] = {}
         if focus_keyword:
-            payload["meta"] = {"rank_math_focus_keyword": focus_keyword}
+            meta["rank_math_focus_keyword"] = focus_keyword
+        if seo_title:
+            meta["rank_math_title"] = seo_title
+        if seo_description:
+            meta["rank_math_description"] = seo_description
+        if meta:
+            payload["meta"] = meta
         endpoint = f"posts/{post_id}" if post_id else "posts"
         return self.request("POST", endpoint, json=payload)
 
@@ -838,6 +917,33 @@ def derive_focus_keyword(kw: str, title: str) -> str:
         if sep in head:
             head = head.split(sep, 1)[0]
     return head.strip()
+
+
+def align_focus_keyword(kw: str, title: str) -> str:
+    """Rank Math のフォーカスキーワードを本文の表記へ寄せる。
+
+    日本語は分かち書きしないため、指定KWの半角スペースを詰め、
+    `wordpress` の表記ゆれを `WordPress` に統一する。
+    例: 「wordpress セキュリティ」→「WordPressセキュリティ」
+    こうすることで、タイトル・本文・見出しとの一致率が上がり、
+    Rank Math のキーワード判定（タイトル/先頭/密度）が改善する。
+    """
+    base = derive_focus_keyword(kw, title)
+    joined = re.sub(r"\s+", "", base)
+    joined = re.sub(r"wordpress", "WordPress", joined, flags=re.IGNORECASE)
+    return joined
+
+
+def build_seo_title(title: str) -> str:
+    """Rank Math「タイトルの読みやすさ」の数字要件を満たすSEOタイトルを作る。
+
+    既に数字を含むタイトルはそのまま。含まないものだけ「（2026年版）」を付ける。
+    投稿タイトル自体は変更せず、Rank Math の rank_math_title にのみ使う。
+    """
+    title = safe_str(title).strip()
+    if not title or re.search(r"\d", title):
+        return title
+    return f"{title}（2026年版）"
 
 
 # --------------------------------------------------------------------------- #
@@ -965,6 +1071,18 @@ def main() -> int:
         rng = ",".join(str(n) for n in sorted(no_filter))
         print(f"  対象No指定: {rng}")
 
+    # 内部リンク解決用の No -> URL(/slug/) マップを先に作る
+    no_to_url: dict[int, str] = {}
+    for _i, _row in df.iterrows():
+        _no = no_to_int(safe_str(_row.get(col["no"])) if col["no"] else "")
+        if _no is None:
+            continue
+        _title = safe_str(_row.get(col["title"])) if col["title"] else ""
+        _eslug = safe_str(_row.get(col["slug"])) if col["slug"] else ""
+        _slug = make_slug(_eslug or _title, f"post-{int(_i) + 1:03d}")
+        if _slug:
+            no_to_url[_no] = f"/{_slug}/"
+
     # スラッグ重複の検出（create_only で後勝ちの取りこぼしを防ぐための警告）
     dup_slugs = detect_duplicate_slugs(df, col)
     if dup_slugs:
@@ -1057,6 +1175,8 @@ def main() -> int:
             continue
 
         md_text = article_path.read_text(encoding="utf-8")
+        # FAQの改行・内部リンクコメントの実リンク化などの補正を適用する
+        md_text = enhance_article_markdown(md_text, no_to_url)
         content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
         img_note = "画像あり" if image_path else "画像なし"
 
@@ -1116,7 +1236,8 @@ def main() -> int:
                 print(f"[SKIP] No.{no_value} {title} -> {result['message']}")
                 continue
 
-            category_ids = [i for i in (wp.find_or_create_term("category", n) for n in category_names) if i]
+            # 「親 > 子」形式を親子カテゴリとして作成し、末端IDを付与する
+            category_ids = [i for i in (wp.find_or_create_category_path(n) for n in category_names) if i]
             tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
 
             # 本文を Gutenberg ブロックへ変換（「ブロックを解除」警告の回避）
@@ -1133,7 +1254,10 @@ def main() -> int:
                 if not args.no_inline_eyecatch and media_url:
                     post_content = build_image_block(media_url, alt_text) + body_html
 
-            focus_keyword = derive_focus_keyword(kw, title)
+            # フォーカスKWは本文表記に寄せ、SEOタイトル/説明も Rank Math に設定する
+            focus_keyword = align_focus_keyword(kw, title)
+            seo_title = build_seo_title(title)
+            seo_description = excerpt
             created = wp.create_post(
                 title=title,
                 content_html=post_content,
@@ -1145,6 +1269,8 @@ def main() -> int:
                 featured_media=featured_media,
                 post_id=post_id_to_update,
                 focus_keyword=focus_keyword,
+                seo_title=seo_title,
+                seo_description=seo_description,
             )
             if focus_keyword:
                 # 投稿レスポンスの meta から実際に保存された値を確認する。
