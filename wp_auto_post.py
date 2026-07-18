@@ -1109,7 +1109,14 @@ def main() -> int:
                 focus_keyword=focus_keyword,
             )
             if focus_keyword:
-                print(f"  focus_keyword: {focus_keyword}")
+                # 投稿レスポンスの meta から実際に保存された値を確認する。
+                # show_in_rest 登録済みなら保存値が返る。空なら未保存＝サイト側未対応。
+                saved_kw = (created.get("meta") or {}).get("rank_math_focus_keyword", "")
+                if saved_kw:
+                    print(f"  focus_keyword OK（保存確認）: {saved_kw}")
+                else:
+                    print(f"  focus_keyword 送信済みだが未保存: '{focus_keyword}' "
+                          f"→ サイト側でRank MathメタがREST未公開の可能性")
 
             now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             result["post_id"] = created.get("id", "")
