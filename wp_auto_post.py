@@ -372,14 +372,25 @@ def fix_faq_linebreaks(md_text: str) -> str:
     return _FAQ_QA_PATTERN.sub(r"\1  \n\2", md_text)
 
 
-def normalize_keyword_wording(text: str) -> str:
-    """フォーカスKW（WordPressセキュリティ）と本文の表記を一致させる。
+def seed_focus_keyword(text: str, raw_kw: str, aligned_kw: str) -> str:
+    """本文・メタ内の指定KW表記をフォーカスKW（整形後）へ揃える。
 
-    「WordPressのセキュリティ」は日本語として自然だが、Rank Math のキーワード
-    一致では「WordPressセキュリティ」と別物になり、密度・見出し・先頭判定が
-    通らない。意味の変わらない範囲で表記を寄せる。
+    例: 指定KW「wordpress セキュリティ」→ 本文/メタの
+        「wordpress セキュリティ」「WordPress セキュリティ」「WordPressのセキュリティ」
+        などを、フォーカスKW「WordPressセキュリティ」に統一する。
+    これで Rank Math のメタ説明・密度・見出し・先頭判定の一致率が上がる。
     """
-    return text.replace("WordPressのセキュリティ", "WordPressセキュリティ")
+    if not aligned_kw:
+        return text
+    # 「〜の」で繋ぐ自然な表記も拾う（WordPressのセキュリティ 等）
+    text = text.replace("WordPressのセキュリティ", "WordPressセキュリティ")
+    raw_kw = safe_str(raw_kw).strip()
+    if raw_kw:
+        words = [w for w in re.split(r"[ 　]+", raw_kw) if w]
+        if words:
+            pattern = r"[ 　]*".join(re.escape(w) for w in words)
+            text = re.sub(pattern, aligned_kw, text, flags=re.IGNORECASE)
+    return text
 
 
 def convert_internal_links(md_text: str, no_to_url: dict[int, str]) -> str:
@@ -424,12 +435,17 @@ def link_references(md_text: str) -> str:
 
 
 def build_blogcard_block(url: str) -> str:
-    """内部リンクを Cocoon のブログカード（メモボックス囲み）ブロックとして生成する。"""
+    """内部リンクを Cocoon のブログカード（メモボックス囲み）ブロックとして生成する。
+
+    見出し文をテキストリンクにして実際の <a href> を含める。これにより
+    Cocoon がブログカードを動的描画する前でも、Rank Math が内部リンクを
+    検出できる（ブロックコメントだけだと内部リンク無しと判定されるため）。
+    """
     return (
         '<!-- wp:group {"className":"is-style-memo-box","layout":{"type":"constrained"}} -->\n'
         '<div class="wp-block-group is-style-memo-box">'
         '<!-- wp:paragraph {"style":{"typography":{"textAlign":"left"}}} -->\n'
-        '<p class="has-text-align-left">▼ 詳しくはこちらを参考ください</p>\n'
+        f'<p class="has-text-align-left">▼ <a href="{url}">詳しくはこちらを参考ください</a></p>\n'
         '<!-- /wp:paragraph -->\n\n'
         f'<!-- wp:cocoon-blocks/embed-blogcard {{"url":"{url}"}} /--></div>\n'
         '<!-- /wp:group -->'
@@ -446,9 +462,11 @@ def inject_blogcards(blocks_html: str, base_url: str) -> str:
     return _BLOGCARD_PLACEHOLDER.sub(repl, blocks_html)
 
 
-def enhance_article_markdown(md_text: str, no_to_url: dict[int, str]) -> str:
+def enhance_article_markdown(
+    md_text: str, no_to_url: dict[int, str], raw_kw: str = "", aligned_kw: str = ""
+) -> str:
     """投稿前に本文Markdownへ加える補正をまとめて適用する。"""
-    md_text = normalize_keyword_wording(md_text)
+    md_text = seed_focus_keyword(md_text, raw_kw, aligned_kw)
     md_text = fix_faq_linebreaks(md_text)
     md_text = convert_internal_links(md_text, no_to_url)
     md_text = link_references(md_text)
@@ -1242,7 +1260,7 @@ def main() -> int:
         slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
         excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
         # メタ説明もフォーカスKWの表記に寄せる（Rank Mathのメタ判定対策）
-        excerpt = normalize_keyword_wording(excerpt)
+        excerpt = seed_focus_keyword(excerpt, kw, align_focus_keyword(kw, title))
         if args.category.strip():
             # --category 指定時は全記事のカテゴリをこの値に統一（Excelの列を無視）
             category_names = split_terms(args.category)
@@ -1301,8 +1319,10 @@ def main() -> int:
             continue
 
         md_text = article_path.read_text(encoding="utf-8")
-        # FAQの改行・内部リンクコメントの実リンク化などの補正を適用する
-        md_text = enhance_article_markdown(md_text, no_to_url)
+        # FAQの改行・内部リンクのブログカード化・KW表記整合などの補正を適用する
+        md_text = enhance_article_markdown(
+            md_text, no_to_url, kw, align_focus_keyword(kw, title)
+        )
         content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
         img_note = "画像あり" if image_path else "画像なし"
 
