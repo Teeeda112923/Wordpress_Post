@@ -1,0 +1,170 @@
+name: WordPress Security Auto Post
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "実行モード（dry-runで確認 / postで投稿）"
+        type: choice
+        required: true
+        default: "dry-run"
+        options: [dry-run, post]
+      limit:
+        description: "投稿件数（0で全件）"
+        type: string
+        required: true
+        default: "0"
+      post_status:
+        description: "投稿ステータス"
+        type: choice
+        required: true
+        default: "draft"
+        options: [draft, pending, publish]
+      write_mode:
+        description: "書き込みモード"
+        type: choice
+        required: true
+        default: "create_only"
+        options: [create_only, update_only, upsert]
+      input_file:
+        description: "制作管理表のパス"
+        type: string
+        required: true
+        default: "data/wordpress-security-production.xlsx"
+      sheet_name:
+        description: "制作管理表のシート名"
+        type: string
+        required: true
+        default: "制作管理表"
+      articles_dir:
+        description: "記事Markdownのディレクトリ"
+        type: string
+        required: true
+        default: "projects/wordpress-security/articles"
+      images_dir:
+        description: "アイキャッチ画像のディレクトリ"
+        type: string
+        required: true
+        default: "projects/wordpress-security/eyecatches"
+      results_dir:
+        description: "結果CSVの出力ディレクトリ"
+        type: string
+        required: true
+        default: "projects/wordpress-security/results"
+      category:
+        description: "全記事のカテゴリを統一（空ならExcelのWPカテゴリ列を使用）"
+        type: string
+        required: false
+        default: ""
+      nos:
+        description: "投稿するNo（例: 2-10,13-15）。空なら全件"
+        type: string
+        required: false
+        default: ""
+      quality_gate:
+        description: "投稿前に文字数・構成の品質検査を実行する"
+        type: boolean
+        required: true
+        default: false
+      quality_tolerance:
+        description: "指定文字数の許容率（0.03で±3%）"
+        type: string
+        required: true
+        default: "0.03"
+      update_excel:
+        description: "投稿結果を制作管理表へ書き戻してコミットする"
+        type: boolean
+        required: true
+        default: false
+
+concurrency:
+  group: wp-security-auto-post
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Article quality gate
+        run: |
+          if [ "${{ inputs.quality_gate }}" = "true" ]; then
+            python article_quality_check.py \
+              --input "${{ inputs.input_file }}" \
+              --sheet "${{ inputs.sheet_name }}" \
+              --articles-dir "${{ inputs.articles_dir }}" \
+              --results "${{ inputs.results_dir }}/article_quality_results.csv" \
+              --tolerance "${{ inputs.quality_tolerance }}" \
+              --nos "${{ inputs.nos }}" \
+              --fail-on-error
+          else
+            echo "quality_gate=false: 品質検査をスキップします"
+          fi
+
+      - name: Run WordPress auto post
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.mode }}" = "dry-run" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          UPDATE_EXCEL_FLAG=""
+          if [ "${{ inputs.update_excel }}" = "true" ]; then
+            UPDATE_EXCEL_FLAG="--update-excel"
+          fi
+
+          python wp_auto_post.py \
+            --input "${{ inputs.input_file }}" \
+            --sheet "${{ inputs.sheet_name }}" \
+            --articles-dir "${{ inputs.articles_dir }}" \
+            --images-dir "${{ inputs.images_dir }}" \
+            --post-status "${{ inputs.post_status }}" \
+            --write-mode "${{ inputs.write_mode }}" \
+            --category "${{ inputs.category }}" \
+            --nos "${{ inputs.nos }}" \
+            --limit "${{ inputs.limit }}" \
+            --output-dir "${{ inputs.results_dir }}" \
+            $DRY_RUN_FLAG $UPDATE_EXCEL_FLAG
+
+      - name: Upload result CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wp-security-auto-post-results
+          path: ${{ inputs.results_dir }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit updated Excel
+        if: ${{ inputs.update_excel == true }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ inputs.input_file }}"
+          if git diff --cached --quiet; then
+            echo "Excelに変更はありません"
+          else
+            git commit -m "Update WordPress security sheet with post results [skip ci]"
+            git push
+          fi
