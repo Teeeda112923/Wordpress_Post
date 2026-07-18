@@ -850,10 +850,9 @@ class WordPressClient:
             return self._term_cache[cache_key]
 
         endpoint = "categories" if taxonomy == "category" else "tags"
-        params: dict[str, Any] = {"search": name, "per_page": 100}
-        if taxonomy == "category":
-            params["parent"] = parent
-        data = self.request("GET", endpoint, params=params)
+        # 親フィルタは付けず名前で検索し、親の一致はコード側で判定する
+        # （REST の parent フィルタで既存を取りこぼすケースを避けるため）
+        data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
         term_id = 0
         for item in (data if isinstance(data, list) else []):
             if safe_str(item.get("name")).lower() != name.lower():
@@ -864,14 +863,39 @@ class WordPressClient:
             term_id = int(item["id"])
             break
         if not term_id:
-            body: dict[str, Any] = {"name": name}
-            if taxonomy == "category" and parent:
-                body["parent"] = parent
-            created = self.request("POST", endpoint, json=body)
-            term_id = int(created["id"])
+            term_id = self._create_term(
+                endpoint, name, parent if taxonomy == "category" else 0
+            )
 
         self._term_cache[cache_key] = term_id
         return term_id
+
+    def _create_term(self, endpoint: str, name: str, parent: int) -> int:
+        """ターム作成。既に存在（term_exists）していれば既存IDを回収して返す。"""
+        body: dict[str, Any] = {"name": name}
+        if parent:
+            body["parent"] = parent
+        url = f"{self.api_base}/{endpoint}"
+        resp = self.session.request("POST", url, json=body, timeout=90)
+        if resp.status_code < 400:
+            return int(resp.json()["id"])
+        # 検索で取りこぼしても、term_exists の応答には既存 term_id が入る
+        err: dict[str, Any] = {}
+        try:
+            err = resp.json()
+        except Exception:
+            err = {}
+        if err.get("code") == "term_exists":
+            data = err.get("data")
+            term_id = 0
+            if isinstance(data, dict):
+                raw = data.get("term_id")
+                if isinstance(raw, dict):  # 稀に入れ子で返るサイト対策
+                    raw = raw.get("term_id")
+                term_id = int(raw or 0)
+            if term_id:
+                return term_id
+        raise RuntimeError(f"WordPress API エラー {extract_api_error(resp)}")
 
     def find_or_create_category_path(self, path_str: str) -> int:
         """"親 > 子 > 孫" の形式を解釈し、親子関係を作って末端カテゴリのIDを返す。
