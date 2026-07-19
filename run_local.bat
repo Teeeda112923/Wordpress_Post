@@ -35,9 +35,11 @@ if /I "%MODE%"=="dry-run" set "DRY_RUN_FLAG=--dry-run"
 rem Maintenance modes:
 rem   MODE=list   ... audit managed posts on the site (read-only)
 rem   MODE=delete ... list then permanently delete after typing yes
+rem   MODE=media  ... delete duplicate unused eyecatch images after typing yes
 set "EXTRA_FLAGS="
 if /I "%MODE%"=="list"   set "EXTRA_FLAGS=--list-managed"
 if /I "%MODE%"=="delete" set "EXTRA_FLAGS=--delete-managed"
+if /I "%MODE%"=="media"  set "EXTRA_FLAGS=--cleanup-media"
 
 echo ==============================================
 echo   MODE=%MODE%  STATUS=%STATUS%  WRITE_MODE=%WRITE_MODE%  NOS=%NOS%  LIMIT=%LIMIT%

@@ -1086,6 +1086,35 @@ class WordPressClient:
         data = self.request("DELETE", f"posts/{post_id}", params={"force": "true"})
         return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
 
+    def get_media_source_url(self, media_id: int) -> str:
+        """メディアIDから配信URL（source_url）を取得する。失敗時は空文字。"""
+        if not media_id:
+            return ""
+        try:
+            data = self.request("GET", f"media/{media_id}")
+        except RuntimeError:
+            return ""
+        return safe_str((data or {}).get("source_url")) if isinstance(data, dict) else ""
+
+    def list_media_page(self, page: int) -> list[dict[str, Any]]:
+        """メディアライブラリの画像を100件ずつ取得する。範囲外ページは空リスト。"""
+        params = {
+            "per_page": 100,
+            "page": page,
+            "media_type": "image",
+            "context": "edit",
+        }
+        try:
+            data = self.request("GET", "media", params=params)
+        except RuntimeError:
+            return []  # ページ範囲外（rest_post_invalid_page_number）等
+        return data if isinstance(data, list) else []
+
+    def delete_media_permanently(self, media_id: int) -> bool:
+        """メディア（添付ファイル）を完全削除する。"""
+        data = self.request("DELETE", f"media/{media_id}", params={"force": "true"})
+        return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
+
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
         """画像をアップロードし (media_id, source_url) を返す。"""
         mime_type, _ = mimetypes.guess_type(str(image_path))
@@ -1270,7 +1299,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="--delete-managed の確認プロンプトをスキップ",
+        help="--delete-managed / --cleanup-media の確認プロンプトをスキップ",
+    )
+    parser.add_argument(
+        "--cleanup-media",
+        action="store_true",
+        help="重複アップロードされたアイキャッチ画像（未使用世代）を完全削除して終了",
+    )
+    parser.add_argument(
+        "--force-image-upload",
+        action="store_true",
+        help="更新時も画像を再アップロードする（既定は既存アイキャッチを再利用）",
     )
     return parser.parse_args()
 
@@ -1356,6 +1395,112 @@ def run_managed_maintenance(
         print("  きれいになりました。次は MODE=post / WRITE_MODE=create_only で全件を作成してください。")
 
 
+def run_media_cleanup(
+    wp: "WordPressClient",
+    df: "pd.DataFrame",
+    col: dict[str, str | None],
+    assume_yes: bool,
+) -> None:
+    """重複アップロードされたアイキャッチ画像を整理する。
+
+    対象: 管理表の「画像ファイル名」（001.jpg 等）に由来する添付ファイル
+          （WordPress が付けた 001-1 / 001-scaled 等の派生名を含む）。
+    保護: 各記事のアイキャッチ（featured_media）と、本文中で参照されている
+          画像URL。それ以外の世代だけを完全削除する。
+    """
+    # ---- 管理対象の画像ファイル名の語幹（001 等）を集める --------------------
+    stems: set[str] = set()
+    slugs: list[str] = []
+    for idx, row in df.iterrows():
+        image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
+        if image_name:
+            stems.add(Path(image_name).stem.lower())
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        if slug:
+            slugs.append(slug)
+    if not stems:
+        print("  管理表に画像ファイル名がないため対象なし。")
+        return
+
+    # ---- 使用中の画像を保護リストに入れる -----------------------------------
+    print(f"\n=== 使用中のアイキャッチを確認（{len(slugs)} 記事） ===")
+    protected_ids: set[int] = set()
+    protected_basenames: set[str] = set()
+    for slug in slugs:
+        post = wp.find_post_by_slug(slug, "publish")
+        if not post:
+            continue
+        fm = int(post.get("featured_media") or 0)
+        if fm:
+            protected_ids.add(fm)
+        content_obj = post.get("content") or {}
+        content = safe_str(content_obj.get("raw")) or safe_str(content_obj.get("rendered"))
+        for src in re.findall(r'src="([^"]+)"', content):
+            protected_basenames.add(Path(src.split("?")[0]).name.lower())
+    print(f"  保護対象: featured {len(protected_ids)} 件 / 本文参照 {len(protected_basenames)} ファイル名")
+
+    # ---- メディアライブラリを走査して削除候補を集める ------------------------
+    stem_pattern = re.compile(
+        r"^(" + "|".join(re.escape(s) for s in sorted(stems)) + r")(-[a-z0-9]+)*$"
+    )
+    candidates: list[dict[str, Any]] = []
+    scanned = 0
+    page = 1
+    while True:
+        items = wp.list_media_page(page)
+        if not items:
+            break
+        scanned += len(items)
+        for item in items:
+            source_url = safe_str(item.get("source_url")).split("?")[0]
+            basename = Path(source_url).name.lower()
+            stem = Path(basename).stem
+            if not stem_pattern.match(stem):
+                continue  # 管理対象外の画像（他の記事の画像など）は触らない
+            media_id = int(item.get("id") or 0)
+            if media_id in protected_ids or basename in protected_basenames:
+                continue
+            candidates.append({"id": media_id, "file": basename})
+        if len(items) < 100:
+            break
+        page += 1
+
+    print(f"\n=== メディア走査結果 ===")
+    print(f"  画像 {scanned} 件を確認 → 削除候補 {len(candidates)} 件（使用中は除外済み）")
+    if not candidates:
+        print("  削除する重複はありません。")
+        return
+
+    for c in candidates[:10]:
+        print(f"    - id={c['id']} {c['file']}")
+    if len(candidates) > 10:
+        print(f"    …ほか {len(candidates) - 10} 件")
+
+    if not assume_yes:
+        answer = input(
+            f"  上記 {len(candidates)} 件の画像を完全削除します。よろしいですか？ [yes/N]: "
+        ).strip().lower()
+        if answer not in ("y", "yes"):
+            print("  中止しました。")
+            return
+
+    deleted = 0
+    failed = 0
+    for c in candidates:
+        try:
+            ok = wp.delete_media_permanently(c["id"])
+        except RuntimeError as exc:
+            ok = False
+            print(f"    [ERROR] id={c['id']} {c['file']} -> {str(exc)[:120]}")
+        if ok:
+            deleted += 1
+        else:
+            failed += 1
+    print(f"\n=== メディア削除サマリ ===\n  削除: {deleted} 件 / 失敗: {failed} 件")
+
+
 def main() -> int:
     args = parse_args()
     limit = None if args.limit is None or args.limit <= 0 else args.limit
@@ -1430,6 +1575,13 @@ def main() -> int:
             wp, df, col, no_filter,
             delete=args.delete_managed, assume_yes=args.yes,
         )
+        return 0
+
+    # ---- 保守モード：重複アイキャッチ画像の整理 -----------------------------
+    if args.cleanup_media:
+        if wp is None:
+            raise RuntimeError("--cleanup-media には WordPress 認証情報が必要です。")
+        run_media_cleanup(wp, df, col, assume_yes=args.yes)
         return 0
 
     # 内部リンク解決用の No -> URL マップを先に作る（まずは /slug/ を仮置き）
@@ -1625,12 +1777,23 @@ def main() -> int:
             # 内部リンクのプレースホルダを Cocoon ブログカードブロックへ差し替える
             body_html = inject_blogcards(body_html, wp.base_url)
 
-            # 画像がある場合のみアップロードして featured_media を差し替える。
-            # 画像が無い場合は featured_media を渡さず、既存のアイキャッチを保持する。
+            # 画像がある場合のみ featured_media を設定する。
+            # 更新時は既存のアイキャッチを再利用し、毎回の再アップロードで
+            # メディアライブラリが増殖するのを防ぐ（--force-image-upload で再アップロード）。
             featured_media: int | None = None
+            media_url = ""
             post_content = body_html
             if image_path:
-                featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
+                if post_id_to_update and existing and not args.force_image_upload:
+                    existing_fm = int(existing.get("featured_media") or 0)
+                    if existing_fm:
+                        reuse_url = wp.get_media_source_url(existing_fm)
+                        if reuse_url:
+                            featured_media = existing_fm
+                            media_url = reuse_url
+                            print(f"  アイキャッチ再利用: media id={existing_fm}")
+                if featured_media is None:
+                    featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
                 # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
                 if not args.no_inline_eyecatch and media_url:
                     post_content = build_image_block(media_url, alt_text) + body_html
