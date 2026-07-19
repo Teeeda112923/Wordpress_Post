@@ -1009,6 +1009,8 @@ class WordPressClient:
         }
         data = self.request("GET", "posts", params=params)
         if not isinstance(data, list):
+            # 静かに失敗すると重複作成の原因が見えないため必ず表示する
+            print(f"    [注意] タイトル検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
             return None
         target = title.strip()
         for post in data:
@@ -1018,6 +1020,59 @@ class WordPressClient:
             if target in (raw, rendered):
                 return post
         return None
+
+    def find_posts_by_slug_variants(self, slug: str, max_suffix: int = 20) -> list[dict[str, Any]]:
+        """slug と slug-2..slug-N を、ゴミ箱も含む全ステータスから探す（保守用）。"""
+        if not slug:
+            return []
+        variants = [slug] + [f"{slug}-{i}" for i in range(2, max_suffix + 1)]
+        params = {
+            "slug": ",".join(variants),
+            "status": "publish,future,draft,pending,private,trash",
+            "context": "edit",
+            "per_page": 100,
+        }
+        try:
+            data = self.request("GET", "posts", params=params)
+        except RuntimeError:
+            # trash の一覧取得を拒否するサイト向けフォールバック
+            params["status"] = "publish,future,draft,pending,private"
+            data = self.request("GET", "posts", params=params)
+        if not isinstance(data, list):
+            print(f"    [注意] スラッグ検索の応答が配列ではありません: {str(data)[:200]}")
+            return []
+        return data
+
+    def find_posts_by_title_all(self, title: str) -> list[dict[str, Any]]:
+        """タイトル完全一致の投稿を、ゴミ箱も含めて全て返す（保守用）。"""
+        if not title:
+            return []
+        params = {
+            "search": title,
+            "status": "publish,future,draft,pending,private,trash",
+            "context": "edit",
+            "per_page": 50,
+        }
+        try:
+            data = self.request("GET", "posts", params=params)
+        except RuntimeError as exc:
+            print(f"    [注意] タイトル検索でエラー: {str(exc)[:200]}")
+            return []
+        if not isinstance(data, list):
+            print(f"    [注意] タイトル検索の応答が配列ではありません: {str(data)[:200]}")
+            return []
+        target = title.strip()
+        matches = []
+        for post in data:
+            title_obj = post.get("title") or {}
+            if target in (safe_str(title_obj.get("raw")), safe_str(title_obj.get("rendered"))):
+                matches.append(post)
+        return matches
+
+    def delete_post_permanently(self, post_id: int) -> bool:
+        """投稿をゴミ箱を経由せず完全削除する。"""
+        data = self.request("DELETE", f"posts/{post_id}", params={"force": "true"})
+        return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
 
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
         """画像をアップロードし (media_id, source_url) を返す。"""
@@ -1190,7 +1245,103 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="アイキャッチ画像を本文先頭に差し込まない（既定は差し込む）",
     )
+    parser.add_argument(
+        "--list-managed",
+        action="store_true",
+        help="管理表の記事に対応するサイト上の投稿（重複・ゴミ箱含む）を一覧表示して終了",
+    )
+    parser.add_argument(
+        "--delete-managed",
+        action="store_true",
+        help="管理表の記事に対応するサイト上の投稿（重複含む）を完全削除して終了",
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="--delete-managed の確認プロンプトをスキップ",
+    )
     return parser.parse_args()
+
+
+def run_managed_maintenance(
+    wp: "WordPressClient",
+    df: "pd.DataFrame",
+    col: dict[str, str | None],
+    no_filter: set[int] | None,
+    delete: bool,
+    assume_yes: bool,
+) -> None:
+    """管理表の記事に対応するサイト上の投稿（重複・ゴミ箱含む）を一覧表示／完全削除する。
+
+    スラッグ（-2..-20 の連番サフィックス込み）とタイトル完全一致の両方で探すため、
+    過去の実行で重複作成された投稿もまとめて対象になる。
+    """
+    rows: list[tuple[str, str, str]] = []
+    for idx, row in df.iterrows():
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(idx + 1)
+        n_int = no_to_int(no_value)
+        if no_filter is not None and (n_int is None or n_int not in no_filter):
+            continue
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        if title or slug:
+            rows.append((no_value, slug, title))
+
+    print(f"\n=== サイト上の管理対象投稿を調査（{len(rows)} 記事分） ===")
+    found: dict[int, dict[str, Any]] = {}
+    for no_value, slug, title in rows:
+        merged: dict[int, dict[str, Any]] = {}
+        for post in wp.find_posts_by_slug_variants(slug) + wp.find_posts_by_title_all(title):
+            pid = int(post.get("id") or 0)
+            if pid:
+                merged[pid] = post
+        if not merged:
+            continue
+        print(f"  No.{no_value}: {len(merged)} 件")
+        for pid, post in sorted(merged.items()):
+            date = safe_str(post.get("date")).replace("T", " ")[:16]
+            print(
+                f"    - id={pid} status={safe_str(post.get('status'))} "
+                f"slug={safe_str(post.get('slug'))} ({date})"
+            )
+            found[pid] = post
+
+    print(f"\n  合計: {len(found)} 件の投稿がサイト上にあります。")
+    if not delete:
+        if found:
+            print("  削除する場合は MODE=delete で実行してください（完全削除・ゴミ箱に残りません）。")
+        return
+    if not found:
+        print("  削除対象はありません。")
+        return
+
+    if not assume_yes:
+        answer = input(
+            f"  上記 {len(found)} 件を完全削除します（ゴミ箱に残りません）。よろしいですか？ [yes/N]: "
+        ).strip().lower()
+        if answer not in ("y", "yes"):
+            print("  中止しました。")
+            return
+
+    deleted = 0
+    failed = 0
+    for pid, post in sorted(found.items()):
+        title_obj = post.get("title") or {}
+        label = safe_str(title_obj.get("rendered")) or safe_str(post.get("slug")) or str(pid)
+        try:
+            ok = wp.delete_post_permanently(pid)
+        except RuntimeError as exc:
+            ok = False
+            print(f"    [ERROR] id={pid} {label} -> {str(exc)[:150]}")
+        if ok:
+            deleted += 1
+            print(f"    [DELETED] id={pid} {label}")
+        else:
+            failed += 1
+    print(f"\n=== 削除サマリ ===\n  削除: {deleted} 件 / 失敗: {failed} 件")
+    if failed == 0 and deleted:
+        print("  きれいになりました。次は MODE=post / WRITE_MODE=create_only で全件を作成してください。")
 
 
 def main() -> int:
@@ -1258,6 +1409,16 @@ def main() -> int:
     if no_filter is not None:
         rng = ",".join(str(n) for n in sorted(no_filter))
         print(f"  対象No指定: {rng}")
+
+    # ---- 保守モード：サイト上の管理対象投稿の一覧／完全削除 -----------------
+    if args.list_managed or args.delete_managed:
+        if wp is None:
+            raise RuntimeError("--list-managed / --delete-managed には WordPress 認証情報が必要です。")
+        run_managed_maintenance(
+            wp, df, col, no_filter,
+            delete=args.delete_managed, assume_yes=args.yes,
+        )
+        return 0
 
     # 内部リンク解決用の No -> URL マップを先に作る（まずは /slug/ を仮置き）
     no_to_url: dict[int, str] = {}
@@ -1480,6 +1641,13 @@ def main() -> int:
                 seo_title=seo_title,
                 seo_description=seo_description,
             )
+            returned_slug = safe_str(created.get("slug"))
+            if returned_slug and returned_slug != slug:
+                print(
+                    f"  [警告] スラッグが '{returned_slug}' になりました（希望: '{slug}'）。"
+                    f"同じスラッグの投稿がサイトに残っています（ゴミ箱含む）。"
+                    f"MODE=list で重複を確認してください"
+                )
             if focus_keyword:
                 # 投稿レスポンスの meta から実際に保存された値を確認する。
                 # show_in_rest 登録済みなら保存値が返る。空なら未保存＝サイト側未対応。

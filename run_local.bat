@@ -32,11 +32,18 @@ set "RESULTS_DIR=projects/wordpress-security/results"
 set "DRY_RUN_FLAG="
 if /I "%MODE%"=="dry-run" set "DRY_RUN_FLAG=--dry-run"
 
+rem 保守モード:
+rem   MODE=list   … サイト上の管理対象投稿（重複・ゴミ箱含む）を一覧表示（削除しない）
+rem   MODE=delete … 一覧表示のうえ、確認に yes と答えると全て完全削除
+set "EXTRA_FLAGS="
+if /I "%MODE%"=="list"   set "EXTRA_FLAGS=--list-managed"
+if /I "%MODE%"=="delete" set "EXTRA_FLAGS=--delete-managed"
+
 echo ==============================================
 echo   MODE=%MODE%  STATUS=%STATUS%  WRITE_MODE=%WRITE_MODE%  NOS=%NOS%  LIMIT=%LIMIT%
 echo ==============================================
 
 rem --sheet は指定しない(先頭シート「制作管理表」が自動で使われる)
-python wp_auto_post.py --input "%INPUT_FILE%" --articles-dir "%ARTICLES_DIR%" --images-dir "%IMAGES_DIR%" --post-status "%STATUS%" --write-mode "%WRITE_MODE%" --category "%CATEGORY%" --nos "%NOS%" --limit "%LIMIT%" --output-dir "%RESULTS_DIR%" %DRY_RUN_FLAG%
+python wp_auto_post.py --input "%INPUT_FILE%" --articles-dir "%ARTICLES_DIR%" --images-dir "%IMAGES_DIR%" --post-status "%STATUS%" --write-mode "%WRITE_MODE%" --category "%CATEGORY%" --nos "%NOS%" --limit "%LIMIT%" --output-dir "%RESULTS_DIR%" %DRY_RUN_FLAG% %EXTRA_FLAGS%
 
 endlocal
