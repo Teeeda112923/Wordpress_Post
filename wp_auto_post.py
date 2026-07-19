@@ -915,18 +915,61 @@ class WordPressClient:
                 return term_id
         raise RuntimeError(f"WordPress API エラー {extract_api_error(resp)}")
 
+    def category_exists(self, term_id: int) -> bool:
+        """カテゴリIDが実在するか（親参照が壊れていないか）を確認する。"""
+        if not term_id:
+            return False
+        try:
+            data = self.request("GET", f"categories/{term_id}")
+        except RuntimeError:
+            return False
+        return isinstance(data, dict) and bool(data.get("id"))
+
     def find_or_create_category_path(self, path_str: str) -> int:
         """"親 > 子 > 孫" の形式を解釈し、親子関係を作って末端カテゴリのIDを返す。
 
         区切りが無ければ単一カテゴリとして扱う。
+        親タームが壊れている/消えている場合（rest_term_invalid）は、親を作り直して
+        1段戻り、子作成を再試行する（過去の作成・削除で階層が不整合になった環境対策）。
         """
         parts = [p.strip() for p in re.split(r"[>＞›»＞]", path_str) if p.strip()]
-        parent = 0
-        term_id = 0
-        for name in parts:
-            term_id = self.find_or_create_term("category", name, parent=parent)
-            parent = term_id
-        return term_id
+        if not parts:
+            return 0
+
+        ids: list[int] = []
+        idx = 0
+        guard = 0
+        while idx < len(parts):
+            guard += 1
+            if guard > len(parts) * 3 + 3:
+                break  # 無限ループ防止
+            name = parts[idx]
+            parent = ids[idx - 1] if idx > 0 else 0
+            # 親が実在しないなら、親を作り直すため1段戻る
+            if idx > 0 and not self.category_exists(parent):
+                pname = parts[idx - 1]
+                gparent = ids[idx - 2] if idx >= 2 else 0
+                self._term_cache.pop(("category", pname.lower(), gparent), None)
+                ids.pop()
+                idx -= 1
+                continue
+            try:
+                tid = self.find_or_create_term("category", name, parent=parent)
+            except RuntimeError as exc:
+                if idx > 0 and "rest_term_invalid" in str(exc):
+                    pname = parts[idx - 1]
+                    gparent = ids[idx - 2] if idx >= 2 else 0
+                    self._term_cache.pop(("category", pname.lower(), gparent), None)
+                    ids.pop()
+                    idx -= 1
+                    continue
+                raise
+            if idx < len(ids):
+                ids[idx] = tid
+            else:
+                ids.append(tid)
+            idx += 1
+        return ids[-1] if ids else 0
 
     def find_post_by_slug(self, slug: str, status: str) -> dict[str, Any] | None:
         if not slug:
