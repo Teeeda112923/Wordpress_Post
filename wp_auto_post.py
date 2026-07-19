@@ -832,6 +832,9 @@ class WordPressClient:
             "User-Agent": "Mozilla/5.0 WordPress-Auto-Post/2.0",
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
+            # サーバー側キャッシュ（LiteSpeed等）から古い応答を受け取らない
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
         })
 
         retry = Retry(
@@ -850,6 +853,15 @@ class WordPressClient:
     def request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
         url = f"{self.api_base}/{endpoint.lstrip('/')}"
         kwargs.setdefault("timeout", 90)
+        if method.upper() == "GET":
+            # URLをキーにするサーバーキャッシュ対策：毎回ユニークなパラメータを付ける。
+            # 「投稿が存在しない」時代の応答がキャッシュされ既存判定が空振りし続けると、
+            # upsert が毎回新規作成して重複記事を量産してしまう（実際に発生した）。
+            params = kwargs.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            params.setdefault("_nocache", str(int(time.time() * 1000)))
+            kwargs["params"] = params
         response = self.session.request(method, url, **kwargs)
         if response.status_code >= 400:
             raise RuntimeError(f"WordPress API エラー {extract_api_error(response)}")

@@ -32,9 +32,9 @@ set "RESULTS_DIR=projects/wordpress-security/results"
 set "DRY_RUN_FLAG="
 if /I "%MODE%"=="dry-run" set "DRY_RUN_FLAG=--dry-run"
 
-rem 保守モード:
-rem   MODE=list   … サイト上の管理対象投稿（重複・ゴミ箱含む）を一覧表示（削除しない）
-rem   MODE=delete … 一覧表示のうえ、確認に yes と答えると全て完全削除
+rem Maintenance modes:
+rem   MODE=list   ... audit managed posts on the site (read-only)
+rem   MODE=delete ... list then permanently delete after typing yes
 set "EXTRA_FLAGS="
 if /I "%MODE%"=="list"   set "EXTRA_FLAGS=--list-managed"
 if /I "%MODE%"=="delete" set "EXTRA_FLAGS=--delete-managed"
