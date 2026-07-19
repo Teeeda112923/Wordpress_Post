@@ -456,7 +456,10 @@ def inject_blogcards(blocks_html: str, base_url: str) -> str:
     """Gutenberg 変換後のプレースホルダ段落をブログカードブロックへ置き換える。"""
     def repl(m: "re.Match[str]") -> str:
         path = m.group(1)
-        url = base_url.rstrip("/") + "/" + path.lstrip("/")
+        if path.startswith("http"):  # 実パーマリンク解決済みの絶対URL
+            url = path
+        else:
+            url = base_url.rstrip("/") + "/" + path.lstrip("/")
         return build_blogcard_block(url)
 
     return _BLOGCARD_PLACEHOLDER.sub(repl, blocks_html)
@@ -1256,7 +1259,7 @@ def main() -> int:
         rng = ",".join(str(n) for n in sorted(no_filter))
         print(f"  対象No指定: {rng}")
 
-    # 内部リンク解決用の No -> URL(/slug/) マップを先に作る
+    # 内部リンク解決用の No -> URL マップを先に作る（まずは /slug/ を仮置き）
     no_to_url: dict[int, str] = {}
     for _i, _row in df.iterrows():
         _no = no_to_int(safe_str(_row.get(col["no"])) if col["no"] else "")
@@ -1267,6 +1270,20 @@ def main() -> int:
         _slug = make_slug(_eslug or _title, f"post-{int(_i) + 1:03d}")
         if _slug:
             no_to_url[_no] = f"/{_slug}/"
+
+    # 公開済み記事は WordPress から実際のパーマリンクを取得して置き換える。
+    # サイトのパーマリンク設定（日付入り等）が何であっても正しいURLになる。
+    # 未投稿の記事は /slug/ のまま残り、次回の upsert 実行で実URLに更新される。
+    if wp is not None:
+        resolved = 0
+        for _no, _path in list(no_to_url.items()):
+            _post = wp.find_post_by_slug(_path.strip("/"), args.post_status)
+            _link = safe_str((_post or {}).get("link"))
+            if _link:
+                no_to_url[_no] = _link
+                resolved += 1
+        print(f"  内部リンク先の実URL解決: {resolved}/{len(no_to_url)} 件"
+              + ("" if resolved == len(no_to_url) else "（未投稿分は投稿後の再実行で解決されます）"))
 
     # スラッグ重複の検出（create_only で後勝ちの取りこぼしを防ぐための警告）
     dup_slugs = detect_duplicate_slugs(df, col)
