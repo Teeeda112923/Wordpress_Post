@@ -25,7 +25,7 @@ on:
         description: "WordPressへ変更せず確認だけ行う"
         type: boolean
         required: true
-        default: true
+        default: false
 
 permissions:
   contents: read
