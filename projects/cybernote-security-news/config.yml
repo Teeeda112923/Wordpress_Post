@@ -1,0 +1,31 @@
+timezone: Asia/Tokyo
+source_lookback_hours: 24
+max_candidates_per_check: 10
+max_posts_per_day: 1
+
+article:
+  max_chars: 1000
+  target_chars_min: 700
+  target_chars_max: 950
+  intro_max_chars: 240
+  required_internal_links: 1
+  required_external_links: 1
+
+image:
+  width: 1200
+  height: 800
+  format: PNG
+  font: Noto Sans JP
+
+publication:
+  draft_time_jst: "18:30"
+  publish_time_jst: "19:00"
+  draft_cron_utc: "30 9 * * *"
+  publish_cron_utc: "0 10 * * *"
+
+paths:
+  ledger: projects/cybernote-security-news/data/news_ledger.csv
+  candidates: projects/cybernote-security-news/data/news_candidates.csv
+  articles: projects/cybernote-security-news/articles
+  eyecatches: projects/cybernote-security-news/eyecatches
+  results: projects/cybernote-security-news/results
