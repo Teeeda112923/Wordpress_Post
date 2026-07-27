@@ -66,7 +66,7 @@ jobs:
       - name: Select today's news
         id: select
         env:
-          INPUT_TARGET_DATE: \${{ inputs.target_date }}
+          INPUT_TARGET_DATE: ${{ inputs.target_date }}
         run: |
           TARGET_DATE="$INPUT_TARGET_DATE"
           if [ -z "$TARGET_DATE" ]; then
@@ -97,17 +97,17 @@ jobs:
             --input "$LEDGER" \
             --articles-dir "$ARTICLES_DIR" \
             --results "$RESULTS_DIR/article_quality_results.csv" \
-            --nos "\${{ steps.select.outputs.selected_no }}" \
+            --nos "${{ steps.select.outputs.selected_no }}" \
             --include-unstarted \
             --fail-on-error
 
       - name: Create WordPress draft
         if: steps.select.outputs.selected_no != ''
         env:
-          WP_BASE_URL: \${{ secrets.WP_BASE_URL }}
-          WP_USERNAME: \${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD: \${{ secrets.WP_APP_PASSWORD }}
-          INPUT_DRY_RUN: \${{ inputs.dry_run }}
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           DRY_RUN_FLAG=""
           if [ "$INPUT_DRY_RUN" = "true" ]; then
@@ -121,7 +121,7 @@ jobs:
             --post-status draft \
             --write-mode upsert \
             --category "サイバーセキュリティ" \
-            --nos "\${{ steps.select.outputs.selected_no }}" \
+            --nos "${{ steps.select.outputs.selected_no }}" \
             --limit 1 \
             --output-dir "$RESULTS_DIR" \
             $DRY_RUN_FLAG
@@ -132,7 +132,7 @@ jobs:
         with:
           name: cybernote-security-news-draft-results
           path: |
-            \${{ env.RESULTS_DIR }}/*.csv
+            ${{ env.RESULTS_DIR }}/*.csv
           if-no-files-found: warn
           retention-days: 30
 
@@ -161,7 +161,7 @@ jobs:
       - name: Select today's news
         id: select
         env:
-          INPUT_TARGET_DATE: \${{ inputs.target_date }}
+          INPUT_TARGET_DATE: ${{ inputs.target_date }}
         run: |
           TARGET_DATE="$INPUT_TARGET_DATE"
           if [ -z "$TARGET_DATE" ]; then
@@ -188,11 +188,11 @@ jobs:
       - name: Publish reviewed draft
         if: steps.select.outputs.selected_no != ''
         env:
-          WP_BASE_URL: \${{ secrets.WP_BASE_URL }}
-          WP_USERNAME: \${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD: \${{ secrets.WP_APP_PASSWORD }}
-          INPUT_TARGET_DATE: \${{ inputs.target_date }}
-          INPUT_DRY_RUN: \${{ inputs.dry_run }}
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          INPUT_TARGET_DATE: ${{ inputs.target_date }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           DRY_RUN_FLAG=""
           if [ "$INPUT_DRY_RUN" = "true" ]; then
@@ -206,7 +206,7 @@ jobs:
             --eyecatches-dir "$IMAGES_DIR" \
             --results-dir "$RESULTS_DIR" \
             --date "$INPUT_TARGET_DATE" \
-            --no "\${{ steps.select.outputs.selected_no }}" \
+            --no "${{ steps.select.outputs.selected_no }}" \
             $DRY_RUN_FLAG
 
       - name: Upload results
@@ -215,6 +215,6 @@ jobs:
         with:
           name: cybernote-security-news-publish-results
           path: |
-            \${{ env.RESULTS_DIR }}/*.csv
+            ${{ env.RESULTS_DIR }}/*.csv
           if-no-files-found: warn
           retention-days: 30
