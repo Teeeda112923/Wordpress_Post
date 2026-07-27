@@ -1,8 +1,9 @@
 name: CyberNote Security News Temporary Dry Run
 
 on:
-  pull_request:
-    types: [synchronize]
+  push:
+    branches:
+      - agent/cybernote-security-news-pipeline
 
 permissions:
   contents: read
