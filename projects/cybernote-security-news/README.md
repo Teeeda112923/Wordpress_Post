@@ -82,7 +82,7 @@ CyberNote向けの短いセキュリティニュース記事を管理する専�
 - WP_USERNAME
 - WP_APP_PASSWORD
 
-OPENAI_API_KEYはWorkで画像生成を行う場合に使います。WordPress投稿ワークフロー自体では使用しません。
+画像生成はWork内蔵の画像生成機能を使用するため、通常の運用ではOPENAI_API_KEYは不要です。GitHub Actionsにも追加しません。WordPress投稿ワークフローは、Workで生成済みのPNGをアップロードするだけです。CLI/API方式へ切り替える場合のみ、別途OPENAI_API_KEYが必要になります。
 
 ## 生成前の確認
 
