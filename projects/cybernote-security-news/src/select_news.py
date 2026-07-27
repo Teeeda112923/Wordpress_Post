@@ -39,6 +39,12 @@ PUBLISHED_VALUES = {
     "publish",
     "posted",
 }
+DRAFT_VALUES = {
+    "下書き済み",
+    "下書き",
+    "draft",
+    "drafted",
+}
 
 
 def value(row: dict[str, str], *names: str) -> str:
@@ -59,6 +65,10 @@ def is_blocked(raw: Any) -> bool:
 
 def is_published(raw: Any) -> bool:
     return normalized(raw) in {normalized(item) for item in PUBLISHED_VALUES}
+
+
+def is_draft(raw: Any) -> bool:
+    return normalized(raw) in {normalized(item) for item in DRAFT_VALUES}
 
 
 def numeric_score(raw: Any) -> float:
@@ -153,8 +163,14 @@ def select_row(
             continue
 
         post_status = normalized(value(row, "投稿ステータス", "post_status"))
-        if is_published(post_status):
-            continue
+        # draft段階では、既に下書き作成済み・公開済みの行を再処理しない。
+        # publish段階では、下書き作成済みの行だけを公開対象にする。
+        if stage == "draft":
+            if is_draft(post_status) or is_published(post_status):
+                continue
+        elif stage == "publish":
+            if not is_draft(post_status):
+                continue
 
         candidates.append(row)
 
