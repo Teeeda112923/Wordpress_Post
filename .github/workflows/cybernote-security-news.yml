@@ -2,10 +2,18 @@ name: CyberNote Security News
 
 on:
   schedule:
-    # 18:30 JST
-    - cron: "30 9 * * *"
-    # 19:00 JST
-    - cron: "0 10 * * *"
+    # 08:30 JST
+    - cron: "30 23 * * *"
+    # 11:30 JST
+    - cron: "30 2 * * *"
+    # 14:30 JST
+    - cron: "30 5 * * *"
+    # 09:00 JST
+    - cron: "0 0 * * *"
+    # 12:00 JST
+    - cron: "0 3 * * *"
+    # 15:00 JST
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       stage:
@@ -28,7 +36,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: cybernote-security-news
@@ -43,7 +51,11 @@ env:
 jobs:
   draft:
     if: >-
-      (github.event_name == 'schedule' && github.event.schedule == '30 9 * * *') ||
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '30 23 * * *' ||
+        github.event.schedule == '30 2 * * *' ||
+        github.event.schedule == '30 5 * * *'
+      )) ||
       (github.event_name == 'workflow_dispatch' && inputs.stage == 'draft')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -126,6 +138,106 @@ jobs:
             --output-dir "$RESULTS_DIR" \
             $DRY_RUN_FLAG
 
+      - name: Fail on WordPress errors
+        if: steps.select.outputs.selected_no != ''
+        env:
+          TARGET_NO: ${{ steps.select.outputs.selected_no }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          selected = os.environ["TARGET_NO"].strip()
+          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          if not files:
+              print("投稿結果CSVが見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+          matches = [row for row in rows if str(row.get("no", "")).strip() == selected]
+          if not matches:
+              print(f"No.{selected} の投稿結果が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          row = matches[-1]
+          status = (row.get("status") or "").strip().lower()
+          if status == "error":
+              print(f"[ERROR] No.{selected}: {row.get('error_content') or row.get('message')}", file=sys.stderr)
+              sys.exit(1)
+          if status not in {"posted", "updated", "dry-run"}:
+              print(f"[ERROR] No.{selected}: 予期しない結果ステータス: {status}", file=sys.stderr)
+              sys.exit(1)
+          print(f"WordPress下書き処理: {status}")
+          PY
+
+      - name: Update ledger after draft
+        if: steps.select.outputs.selected_no != ''
+        env:
+          TARGET_NO: ${{ steps.select.outputs.selected_no }}
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          import sys
+          from pathlib import Path
+
+          selected = os.environ["TARGET_NO"].strip()
+          result_files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          with result_files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              result_rows = list(csv.DictReader(handle))
+          matches = [row for row in result_rows if str(row.get("no", "")).strip() == selected]
+          if not matches:
+              print(f"No.{selected} の投稿結果が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+          result = matches[-1]
+          status = (result.get("status") or "").strip().lower()
+          if status == "dry-run":
+              print("dry-runのため管理簿は更新しません。")
+              sys.exit(0)
+          if status not in {"posted", "updated"}:
+              print(f"管理簿更新対象外のステータスです: {status}", file=sys.stderr)
+              sys.exit(1)
+
+          ledger_path = Path(os.environ["LEDGER"])
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+
+          changed = False
+          for row in ledger_rows:
+              if str(row.get("No", "")).strip() == selected:
+                  row["投稿ステータス"] = "下書き済み"
+                  row["WP投稿ID"] = result.get("post_id", "")
+                  row["WP投稿URL"] = result.get("post_link", "")
+                  row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                  row["エラー内容"] = ""
+                  changed = True
+                  break
+          if not changed:
+              print(f"管理簿にNo.{selected}が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          print(f"管理簿を下書き済みに更新しました: No.{selected}")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER"
+          if git diff --cached --quiet; then
+            echo "管理簿変更なし"
+          else
+            git commit -m "Update CyberNote draft status"
+            git push
+          fi
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
@@ -138,7 +250,11 @@ jobs:
 
   publish:
     if: >-
-      (github.event_name == 'schedule' && github.event.schedule == '0 10 * * *') ||
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '0 0 * * *' ||
+        github.event.schedule == '0 3 * * *' ||
+        github.event.schedule == '0 6 * * *'
+      )) ||
       (github.event_name == 'workflow_dispatch' && inputs.stage == 'publish')
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -208,6 +324,102 @@ jobs:
             --date "$INPUT_TARGET_DATE" \
             --no "${{ steps.select.outputs.selected_no }}" \
             $DRY_RUN_FLAG
+
+      - name: Fail on publish errors
+        if: steps.select.outputs.selected_no != ''
+        env:
+          TARGET_NO: ${{ steps.select.outputs.selected_no }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          selected = os.environ["TARGET_NO"].strip()
+          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("publish_*.csv"))
+          if not files:
+              print("公開結果CSVが見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+          matches = [row for row in rows if str(row.get("No", "")).strip() == selected]
+          if not matches:
+              print(f"No.{selected} の公開結果が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          row = matches[-1]
+          status = (row.get("status") or "").strip().lower()
+          if status not in {"published", "already_published", "dry-run"}:
+              print(f"[ERROR] No.{selected}: {row.get('message')}", file=sys.stderr)
+              sys.exit(1)
+          print(f"WordPress公開処理: {status}")
+          PY
+
+      - name: Update ledger after publish
+        if: steps.select.outputs.selected_no != ''
+        env:
+          TARGET_NO: ${{ steps.select.outputs.selected_no }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          selected = os.environ["TARGET_NO"].strip()
+          result_files = sorted(Path(os.environ["RESULTS_DIR"]).glob("publish_*.csv"))
+          with result_files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              result_rows = list(csv.DictReader(handle))
+          matches = [row for row in result_rows if str(row.get("No", "")).strip() == selected]
+          if not matches:
+              print(f"No.{selected} の公開結果が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+          result = matches[-1]
+          status = (result.get("status") or "").strip().lower()
+          if status == "dry-run":
+              print("dry-runのため管理簿は更新しません。")
+              sys.exit(0)
+          if status not in {"published", "already_published"}:
+              print(f"管理簿更新対象外のステータスです: {status}", file=sys.stderr)
+              sys.exit(1)
+
+          ledger_path = Path(os.environ["LEDGER"])
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+
+          changed = False
+          for row in ledger_rows:
+              if str(row.get("No", "")).strip() == selected:
+                  row["投稿ステータス"] = "公開済み"
+                  row["WP投稿ID"] = result.get("post_id", "")
+                  row["WP投稿URL"] = result.get("post_link", "")
+                  row["最終更新日時"] = result.get("published_at_jst", "")
+                  row["エラー内容"] = ""
+                  changed = True
+                  break
+          if not changed:
+              print(f"管理簿にNo.{selected}が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          print(f"管理簿を公開済みに更新しました: No.{selected}")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER"
+          if git diff --cached --quiet; then
+            echo "管理簿変更なし"
+          else
+            git commit -m "Update CyberNote publish status"
+            git push
+          fi
 
       - name: Upload results
         if: always()
