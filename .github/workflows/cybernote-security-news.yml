@@ -2,10 +2,18 @@ name: CyberNote Security News
 
 on:
   schedule:
-    # 08:30 JST：下書き作成
+    # 08:30 JST
     - cron: "30 23 * * *"
-    # 09:00 JST：公開
+    # 11:30 JST
+    - cron: "30 2 * * *"
+    # 14:30 JST
+    - cron: "30 5 * * *"
+    # 09:00 JST
     - cron: "0 0 * * *"
+    # 12:00 JST
+    - cron: "0 3 * * *"
+    # 15:00 JST
+    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       stage:
@@ -43,7 +51,11 @@ env:
 jobs:
   draft:
     if: >-
-      (github.event_name == 'schedule' && github.event.schedule == '30 23 * * *') ||
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '30 23 * * *' ||
+        github.event.schedule == '30 2 * * *' ||
+        github.event.schedule == '30 5 * * *'
+      )) ||
       (github.event_name == 'workflow_dispatch' && inputs.stage == 'draft')
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -123,6 +135,9 @@ jobs:
             --category "サイバーセキュリティ" \
             --nos "${{ steps.select.outputs.selected_no }}" \
             --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --slug-only-existing-check \
             --output-dir "$RESULTS_DIR" \
             $DRY_RUN_FLAG
 
@@ -238,7 +253,11 @@ jobs:
 
   publish:
     if: >-
-      (github.event_name == 'schedule' && github.event.schedule == '0 0 * * *') ||
+      (github.event_name == 'schedule' && (
+        github.event.schedule == '0 0 * * *' ||
+        github.event.schedule == '0 3 * * *' ||
+        github.event.schedule == '0 6 * * *'
+      )) ||
       (github.event_name == 'workflow_dispatch' && inputs.stage == 'publish')
     runs-on: ubuntu-latest
     timeout-minutes: 20
