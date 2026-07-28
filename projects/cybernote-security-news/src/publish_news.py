@@ -98,8 +98,9 @@ def main() -> int:
         env_required("WP_USERNAME"),
         env_required("WP_APP_PASSWORD"),
     )
-    user = wp.verify_auth()
-    print(f"認証OK: {user}")
+    # 投稿検索を最初のAPI呼び出しとし、users/meの事前確認を省略する。
+    # 認証やBot対策による拒否はWordPressClient.request()で明示的に検出する。
+    print("WordPress投稿検索を開始します（事前認証確認は省略）")
 
     post = wp.find_post_by_slug(slug, "draft")
     if not post:
