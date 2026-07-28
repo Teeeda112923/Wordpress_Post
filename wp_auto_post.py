@@ -938,14 +938,28 @@ class WordPressClient:
             body["parent"] = parent
         url = f"{self.api_base}/{endpoint}"
         resp = self.session.request("POST", url, json=body, timeout=90)
-        if resp.status_code < 400:
-            return int(resp.json()["id"])
-        # 検索で取りこぼしても、term_exists の応答には既存 term_id が入る
+        # Imunify360等がHTTP 200で遮断メッセージを返す場合があるため、
+        # ステータスコードより先にJSON本文を確認する。
         err: dict[str, Any] = {}
         try:
-            err = resp.json()
+            parsed = resp.json()
+            if isinstance(parsed, dict):
+                err = parsed
         except Exception:
             err = {}
+        message = safe_str(err.get("message"))
+        if "Access denied by Imunify360 bot-protection" in message:
+            raise RuntimeError(
+                "Imunify360が自動化アクセスを遮断しました。"
+                "WordPress側でGitHub ActionsからのREST APIアクセス許可を確認してください。"
+            )
+        if resp.status_code < 400:
+            if err.get("id"):
+                return int(err["id"])
+            raise RuntimeError(
+                f"WordPress APIがタームIDのない応答を返しました（HTTP {resp.status_code}）"
+            )
+        # 検索で取りこぼしても、term_exists の応答には既存 term_id が入る
         if err.get("code") == "term_exists":
             data = err.get("data")
             term_id = 0
