@@ -838,8 +838,9 @@ class WordPressClient:
         })
 
         retry = Retry(
-            total=4,
-            backoff_factor=2,  # 2s, 4s, 8s, ...
+            # 自動投稿では、遮断後の連続再試行がBot判定を強めるため最小限にする。
+            total=1,
+            backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=["GET", "POST"],
             raise_on_status=False,
@@ -867,7 +868,19 @@ class WordPressClient:
             raise RuntimeError(f"WordPress API エラー {extract_api_error(response)}")
         if not response.text:
             return None
-        return response.json()
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"WordPress APIがJSON以外の応答を返しました（HTTP {response.status_code}）"
+            ) from exc
+        message = safe_str(data.get("message")) if isinstance(data, dict) else ""
+        if "Access denied by Imunify360 bot-protection" in message:
+            raise RuntimeError(
+                "Imunify360が自動化アクセスを遮断しました。"
+                "WordPress側でGitHub ActionsからのREST APIアクセス許可を確認してください。"
+            )
+        return data
 
     def verify_auth(self) -> str:
         """認証確認。失敗時は分かりやすい例外を投げる。"""
@@ -1242,6 +1255,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--post-status", default="draft", choices=["draft", "pending", "publish"])
     parser.add_argument("--limit", type=int, default=0, help="投稿件数。0 で全件")
     parser.add_argument("--dry-run", action="store_true", help="投稿せず確認だけ行う")
+    parser.add_argument(
+        "--skip-auth-check",
+        action="store_true",
+        help="投稿前のusers/me認証確認を省略する（投稿リクエストで認証結果を判定）",
+    )
+    parser.add_argument(
+        "--skip-internal-link-resolution",
+        action="store_true",
+        help="既存記事の実URL解決を省略し、管理簿・スラッグ由来のURLを使う",
+    )
+    parser.add_argument(
+        "--slug-only-existing-check",
+        action="store_true",
+        help="既存投稿確認をスラッグ検索だけに限定し、タイトル検索を省略する",
+    )
     parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
     parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
     parser.add_argument(
@@ -1540,13 +1568,16 @@ def main() -> int:
             env_required("WP_USERNAME"),
             env_required("WP_APP_PASSWORD"),
         )
-        try:
-            user = wp.verify_auth()
-            print(f"  認証OK: {user} としてログイン")
-        except Exception as exc:
-            raise RuntimeError(
-                f"WordPress 認証に失敗しました。WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を確認してください: {exc}"
-            )
+        if args.skip_auth_check:
+            print("  投稿前の認証確認を省略します（投稿APIで判定）")
+        else:
+            try:
+                user = wp.verify_auth()
+                print(f"  認証OK: {user} としてログイン")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"WordPress 認証に失敗しました。WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を確認してください: {exc}"
+                )
     else:
         # dry-run では認証情報があれば既存有無の判定に使う（無ければ判定不可として続行）
         if all(os.environ.get(k, "").strip() for k in ("WP_BASE_URL", "WP_USERNAME", "WP_APP_PASSWORD")):
@@ -1599,7 +1630,7 @@ def main() -> int:
     # 公開済み記事は WordPress から実際のパーマリンクを取得して置き換える。
     # サイトのパーマリンク設定（日付入り等）が何であっても正しいURLになる。
     # 未投稿の記事は /slug/ のまま残り、次回の upsert 実行で実URLに更新される。
-    if wp is not None:
+    if wp is not None and not args.skip_internal_link_resolution:
         resolved = 0
         for _no, _path in list(no_to_url.items()):
             _post = wp.find_post_by_slug(_path.strip("/"), args.post_status)
@@ -1609,6 +1640,8 @@ def main() -> int:
                 resolved += 1
         print(f"  内部リンク先の実URL解決: {resolved}/{len(no_to_url)} 件"
               + ("" if resolved == len(no_to_url) else "（未投稿分は投稿後の再実行で解決されます）"))
+    elif wp is not None:
+        print("  内部リンク先の実URL解決: 省略（アクセス削減モード）")
 
     # スラッグ重複の検出（create_only で後勝ちの取りこぼしを防ぐための警告）
     dup_slugs = detect_duplicate_slugs(df, col)
@@ -1719,7 +1752,7 @@ def main() -> int:
         # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
         existing = wp.find_post_by_slug(slug, args.post_status) if wp else None
         # slug が空になりがちな下書き等はタイトル完全一致でフォールバック検索する
-        if wp and not existing:
+        if wp and not existing and not args.slug_only_existing_check:
             existing = wp.find_post_by_title(title, args.post_status)
         existence_known = wp is not None
         if not existence_known:
