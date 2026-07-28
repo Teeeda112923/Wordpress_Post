@@ -131,13 +131,13 @@ jobs:
             --articles-dir "$ARTICLES_DIR" \
             --images-dir "$IMAGES_DIR" \
             --post-status draft \
-            --write-mode upsert \
+            --write-mode create_only \
             --category "サイバーセキュリティ" \
             --nos "${{ steps.select.outputs.selected_no }}" \
             --limit 1 \
             --skip-auth-check \
             --skip-internal-link-resolution \
-            --slug-only-existing-check \
+            --skip-existing-check \
             --output-dir "$RESULTS_DIR" \
             $DRY_RUN_FLAG
 
