@@ -1270,6 +1270,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="既存投稿確認をスラッグ検索だけに限定し、タイトル検索を省略する",
     )
+    parser.add_argument(
+        "--skip-existing-check",
+        action="store_true",
+        help="既存投稿の重複確認GETを省略する（create_only専用。管理簿で重複を管理する場合に使用）",
+    )
     parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
     parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
     parser.add_argument(
@@ -1557,6 +1562,10 @@ def main() -> int:
         print("  [注意] --allow-duplicate は非推奨です。--write-mode upsert として扱います。")
     if not args.check_images_only:
         print(f"  書き込みモード: {write_mode}")
+    if args.skip_existing_check and write_mode != "create_only":
+        raise RuntimeError(
+            "--skip-existing-check は --write-mode create_only と併用してください。"
+        )
 
     wp: WordPressClient | None = None
     if args.check_images_only:
@@ -1750,10 +1759,17 @@ def main() -> int:
         result["char_judge"] = judge_char_count(result["char_count"], char_target)
 
         # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
-        existing = wp.find_post_by_slug(slug, args.post_status) if wp else None
-        # slug が空になりがちな下書き等はタイトル完全一致でフォールバック検索する
-        if wp and not existing and not args.slug_only_existing_check:
-            existing = wp.find_post_by_title(title, args.post_status)
+        # Imunify360等がREST APIのGETを自動化アクセスとして遮断する環境向けに、
+        # create_only時だけ既存投稿確認を省略できる。管理簿の投稿ステータスを
+        # 再処理防止の一次情報として扱い、更新・upsertでは従来どおり確認する。
+        existing = None
+        if wp and not args.skip_existing_check:
+            existing = wp.find_post_by_slug(slug, args.post_status)
+            # slug が空になりがちな下書き等はタイトル完全一致でフォールバック検索する
+            if not existing and not args.slug_only_existing_check:
+                existing = wp.find_post_by_title(title, args.post_status)
+        elif wp and args.skip_existing_check:
+            print("    既存投稿確認を省略します（create_only / 管理簿で重複管理）")
         existence_known = wp is not None
         if not existence_known:
             existence_note = "既存不明(認証なし)"
