@@ -887,7 +887,13 @@ class WordPressClient:
         me = self.request("GET", "users/me")
         return me.get("name") or me.get("slug") or "(unknown)"
 
-    def find_or_create_term(self, taxonomy: str, name: str, parent: int = 0) -> int:
+    def find_or_create_term(
+        self,
+        taxonomy: str,
+        name: str,
+        parent: int = 0,
+        skip_search: bool = False,
+    ) -> int:
         name = name.strip()
         if not name:
             return 0
@@ -896,6 +902,15 @@ class WordPressClient:
             return self._term_cache[cache_key]
 
         endpoint = "categories" if taxonomy == "category" else "tags"
+        if skip_search:
+            # Imunify360等が検索GETを遮断する環境では、作成APIだけを呼ぶ。
+            # 既存タームならWordPressの term_exists 応答から既存IDを回収する。
+            term_id = self._create_term(
+                endpoint, name, parent if taxonomy == "category" else 0
+            )
+            self._term_cache[cache_key] = term_id
+            return term_id
+
         # 親フィルタは付けず名前で検索し、親の一致はコード側で判定する
         # （REST の parent フィルタで既存を取りこぼすケースを避けるため）
         data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
@@ -953,7 +968,7 @@ class WordPressClient:
             return False
         return isinstance(data, dict) and bool(data.get("id"))
 
-    def find_or_create_category_path(self, path_str: str) -> int:
+    def find_or_create_category_path(self, path_str: str, skip_search: bool = False) -> int:
         """"親 > 子 > 孫" の形式を解釈し、親子関係を作って末端カテゴリのIDを返す。
 
         区切りが無ければ単一カテゴリとして扱う。
@@ -974,7 +989,7 @@ class WordPressClient:
             name = parts[idx]
             parent = ids[idx - 1] if idx > 0 else 0
             # 親が実在しないなら、親を作り直すため1段戻る
-            if idx > 0 and not self.category_exists(parent):
+            if idx > 0 and not skip_search and not self.category_exists(parent):
                 pname = parts[idx - 1]
                 gparent = ids[idx - 2] if idx >= 2 else 0
                 self._term_cache.pop(("category", pname.lower(), gparent), None)
@@ -982,7 +997,7 @@ class WordPressClient:
                 idx -= 1
                 continue
             try:
-                tid = self.find_or_create_term("category", name, parent=parent)
+                tid = self.find_or_create_term("category", name, parent=parent, skip_search=skip_search)
             except RuntimeError as exc:
                 if idx > 0 and "rest_term_invalid" in str(exc):
                     pname = parts[idx - 1]
@@ -1273,7 +1288,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--skip-existing-check",
         action="store_true",
-        help="既存投稿の重複確認GETを省略する（create_only専用。管理簿で重複を管理する場合に使用）",
+        help="既存投稿・ターム検索のGETを省略する（create_only専用。管理簿で重複を管理する場合に使用）",
     )
     parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
     parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
@@ -1817,8 +1832,24 @@ def main() -> int:
                 continue
 
             # 「親 > 子」形式を親子カテゴリとして作成し、末端IDを付与する
-            category_ids = [i for i in (wp.find_or_create_category_path(n) for n in category_names) if i]
-            tag_ids = [i for i in (wp.find_or_create_term("tag", n) for n in tag_names) if i]
+            category_ids = [
+                i for i in (
+                    wp.find_or_create_category_path(
+                        n, skip_search=args.skip_existing_check
+                    )
+                    for n in category_names
+                )
+                if i
+            ]
+            tag_ids = [
+                i for i in (
+                    wp.find_or_create_term(
+                        "tag", n, skip_search=args.skip_existing_check
+                    )
+                    for n in tag_names
+                )
+                if i
+            ]
 
             # 本文を Gutenberg ブロックへ変換（「ブロックを解除」警告の回避）
             body_html = content_html if args.no_gutenberg_blocks \
