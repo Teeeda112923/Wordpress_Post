@@ -1,0 +1,150 @@
+name: One-off CyberNote No.10 Publish
+
+on:
+  push:
+    paths:
+      - .github/workflows/codex-kindarails2shell-publish-oneoff.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event.head_commit.message == 'Run KindaRails2Shell WordPress publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+      ARTICLES_DIR: projects/cybernote-security-news/articles
+      IMAGES_DIR: projects/cybernote-security-news/eyecatches
+      RESULTS_DIR: projects/cybernote-security-news/results
+      TARGET_DATE: "2026-07-30"
+      TARGET_NO: "10"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Publish dry-run
+        run: |
+          python projects/cybernote-security-news/src/publish_news.py \
+            --ledger "$LEDGER" \
+            --repo-root . \
+            --articles-dir "$ARTICLES_DIR" \
+            --eyecatches-dir "$IMAGES_DIR" \
+            --results-dir "$RESULTS_DIR" \
+            --date "$TARGET_DATE" \
+            --no "$TARGET_NO" \
+            --dry-run
+
+      - name: Publish No.10
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: |
+          python projects/cybernote-security-news/src/publish_news.py \
+            --ledger "$LEDGER" \
+            --repo-root . \
+            --articles-dir "$ARTICLES_DIR" \
+            --eyecatches-dir "$IMAGES_DIR" \
+            --results-dir "$RESULTS_DIR" \
+            --date "$TARGET_DATE" \
+            --no "$TARGET_NO"
+
+      - name: Verify publish result
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("publish_*.csv"))
+          if not files:
+              print("公開結果CSVが見つかりません。", file=sys.stderr)
+              sys.exit(1)
+          with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              row = next(csv.DictReader(handle), {})
+          status = (row.get("status") or "").strip().lower()
+          if status not in {"published", "already_published"}:
+              print(f"No.10の公開結果が不正です: {status} / {row.get('message', '')}", file=sys.stderr)
+              sys.exit(1)
+          print(f"No.10 WordPress status: {status}")
+          print(f"post_id={row.get('post_id', '')}")
+          print(f"post_link={row.get('post_link', '')}")
+          print(f"published_at_jst={row.get('published_at_jst', '')}")
+          PY
+
+      - name: Update news ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          import sys
+          from pathlib import Path
+
+          result_files = sorted(Path(os.environ["RESULTS_DIR"]).glob("publish_*.csv"))
+          with result_files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              result = next(csv.DictReader(handle), {})
+          status = (result.get("status") or "").strip().lower()
+          if status not in {"published", "already_published"}:
+              print(f"台帳更新対象外のステータスです: {status}", file=sys.stderr)
+              sys.exit(1)
+
+          ledger_path = Path(os.environ["LEDGER"])
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+
+          changed = False
+          for row in ledger_rows:
+              if str(row.get("No", "")).strip() == os.environ["TARGET_NO"]:
+                  row["投稿ステータス"] = "公開済み"
+                  row["WP投稿ID"] = result.get("post_id", "")
+                  row["WP投稿URL"] = result.get("post_link", "")
+                  row["最終更新日時"] = result.get("published_at_jst") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                  row["エラー内容"] = ""
+                  changed = True
+                  break
+          if not changed:
+              print("台帳にNo.10が見つかりません。", file=sys.stderr)
+              sys.exit(1)
+
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          print("No.10の台帳を公開済みに更新しました。")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER"
+          if git diff --cached --quiet; then
+            echo "台帳変更なし"
+          else
+            git commit -m "Update CyberNote publish status"
+            git push
+          fi
+
+      - name: Upload publish result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-kindarails2shell-publish-results
+          path: |
+            ${{ env.RESULTS_DIR }}/publish_*.csv
+          if-no-files-found: warn
+          retention-days: 30
