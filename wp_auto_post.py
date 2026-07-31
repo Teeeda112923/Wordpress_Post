@@ -37,6 +37,10 @@ from requests.adapters import HTTPAdapter
 from slugify import slugify
 from urllib3.util.retry import Retry
 
+# CyberNote GEO Kit（独自プラグイン）用メタの組み立て。
+# 投稿の設計（台帳・下書き→公開・cron）は変えず、メタだけを追加で送る。
+import geo_meta as geo_kit
+
 # ローカル実行時は同じフォルダの .env を自動で読み込む。
 # （GitHub Actions では Secrets が環境変数として渡るため、.env が無くても動く）
 try:
@@ -1194,6 +1198,7 @@ class WordPressClient:
         focus_keyword: str = "",
         seo_title: str = "",
         seo_description: str = "",
+        geo_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "title": title,
@@ -1218,6 +1223,12 @@ class WordPressClient:
             meta["rank_math_title"] = seo_title
         if seo_description:
             meta["rank_math_description"] = seo_description
+        # CyberNote GEO Kit のメタ（結論・関連CVE・FAQ・出典）を同じ meta に載せる。
+        # ※ wp-content/mu-plugins/cng-geo-rest.php で REST 公開しておく必要がある
+        #    （未設置だと WordPress 側で無視され、保存確認ログで検知できる）。
+        for key, value in (geo_meta or {}).items():
+            if value:
+                meta[key] = value
         if meta:
             payload["meta"] = meta
         endpoint = f"posts/{post_id}" if post_id else "posts"
@@ -1631,6 +1642,9 @@ def main() -> int:
         else:
             print("  [注意] 認証情報が無いため dry-run では既存有無を判定しません。")
 
+    # 自サイトのホスト名。参考情報の中の内部リンクを出典から除くために使う。
+    site_host = os.environ.get("WP_BASE_URL", "").strip()
+
     no_filter = parse_no_spec(args.nos)
     if no_filter is not None:
         rng = ",".join(str(n) for n in sorted(no_filter))
@@ -1775,6 +1789,18 @@ def main() -> int:
             continue
 
         md_text = article_path.read_text(encoding="utf-8")
+        # GEO Kit 用メタ（結論・関連CVE・FAQ・出典）を記事から組み立てる。
+        # フロントマターがあればそれを優先し、無い項目は本文から抽出する。
+        # 組み立てに失敗しても投稿自体は止めない（メタなしで続行する）。
+        try:
+            cng_meta = geo_kit.build_geo_meta(
+                md_text, cve_hint=kw, slug=slug, site_host=site_host
+            )
+        except Exception as exc:
+            cng_meta = {}
+            print(f"  [警告] GEO情報の組み立てに失敗しました: {exc}")
+        # フロントマターは本文に出さない（区切り線として描画されるのを防ぐ）
+        _, md_text = geo_kit.parse_front_matter(md_text)
         # FAQの改行・内部リンクのブログカード化・KW表記整合などの補正を適用する
         md_text = enhance_article_markdown(
             md_text, no_to_url, kw, align_focus_keyword(kw, title)
@@ -1828,6 +1854,7 @@ def main() -> int:
             results.append(result)
             processed += 1
             print(f"[DRY-RUN] No.{no_value} {title} -> {result['message']}")
+            print(f"  GEO: {geo_kit.describe_geo_meta(cng_meta)}")
             continue
 
         # ---- 実投稿 ---------------------------------------------------------
@@ -1909,6 +1936,7 @@ def main() -> int:
                 focus_keyword=focus_keyword,
                 seo_title=seo_title,
                 seo_description=seo_description,
+                geo_meta=cng_meta,
             )
             returned_slug = safe_str(created.get("slug"))
             if returned_slug and returned_slug != slug:
@@ -1926,6 +1954,21 @@ def main() -> int:
                 else:
                     print(f"  focus_keyword 送信済みだが未保存: '{focus_keyword}' "
                           f"→ サイト側でRank MathメタがREST未公開の可能性")
+
+            if cng_meta:
+                # GEOメタも投稿レスポンスの meta から保存結果を確認する。
+                # 未保存なら mu-plugin 未設置、壊れていればスラッシュの
+                # 二重付与などで表示側の json_decode() が失敗する状態。
+                print(f"  GEO: {geo_kit.describe_geo_meta(cng_meta)}")
+                missing, broken = geo_kit.check_geo_meta(cng_meta, created.get("meta") or {})
+                if missing:
+                    print(f"  [警告] GEOメタが未保存です: {', '.join(missing)} "
+                          f"→ wp-content/mu-plugins/cng-geo-rest.php の設置を確認してください")
+                if broken:
+                    print(f"  [警告] GEOメタの保存値が壊れています: {', '.join(broken)} "
+                          f"→ cng-geo-rest.php の sanitize_callback を確認してください")
+                if not missing and not broken:
+                    print("  GEOメタ保存OK（結論・CVE・FAQ・出典）")
 
             now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             result["post_id"] = created.get("id", "")
