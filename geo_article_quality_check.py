@@ -1,0 +1,373 @@
+#!/usr/bin/env python3
+"""CyberNote GEO/SEO向け記事品質チェッカー。
+
+従来の940字上限は使わず、CyberNote GEO Kitの入力要件を検査する。
+旧 article_quality_check.py からも呼び出せる互換エントリポイントを提供する。
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import re
+from pathlib import Path
+from urllib.parse import urlparse
+
+PRIMARY_DOMAINS = {
+    "jvn.jp", "ipa.go.jp", "jpcert.or.jp", "nisc.go.jp", "npa.go.jp",
+    "soumu.go.jp", "meti.go.jp", "ppc.go.jp", "nvd.nist.gov", "nist.gov",
+    "cisa.gov", "cve.org", "mitre.org", "first.org",
+}
+
+
+def compact(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def plain(value: str) -> str:
+    value = re.sub(r"<!--.*?-->", "", value or "", flags=re.S)
+    value = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"https?://\S+", "", value)
+    value = re.sub(r"<[^>]+>", "", value)
+    value = re.sub(r"^\s{0,3}#{1,6}\s*", "", value, flags=re.M)
+    value = re.sub(r"^\s*[-*+]\s+", "", value, flags=re.M)
+    value = re.sub(r"^\s*\d+[.)]\s+", "", value, flags=re.M)
+    value = re.sub(r"^\s*\|?[-:| ]+\|?\s*$", "", value, flags=re.M)
+    value = re.sub(r"[*_~>#|]", "", value)
+    return value
+
+
+def chars(value: str) -> int:
+    return len(compact(plain(value)))
+
+
+def split_front_matter(md: str) -> tuple[str, str, list[str]]:
+    lines = md.lstrip("\ufeff").splitlines()
+    if not lines or lines[0].strip() != "---":
+        return "", md, ["先頭にYAMLフロントマターがありません"]
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            return "\n".join(lines[1:index]), "\n".join(lines[index + 1:]), []
+    return "", md, ["YAMLフロントマターの終了区切りがありません"]
+
+
+def value_line(front: str, key: str) -> str:
+    match = re.search(rf"(?m)^{re.escape(key)}:\s*(.*)$", front)
+    return match.group(1).strip() if match else ""
+
+
+def faq_items(front: str) -> list[tuple[str, str]]:
+    items: list[tuple[str, str]] = []
+    question = ""
+    answer = ""
+    for line in front.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- q:"):
+            if question:
+                items.append((question, answer))
+            question = stripped[4:].strip()
+            answer = ""
+        elif question and stripped.startswith("a:"):
+            answer = stripped[2:].strip()
+    if question:
+        items.append((question, answer))
+    return items
+
+
+def source_items(front: str) -> list[tuple[str, str, str]]:
+    items: list[tuple[str, str, str]] = []
+    title = ""
+    url = ""
+    publisher = ""
+    for line in front.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- title:"):
+            if title:
+                items.append((title, url, publisher))
+            title = stripped[len("- title:"):].strip()
+            url = ""
+            publisher = ""
+        elif title and stripped.startswith("url:"):
+            url = stripped[len("url:"):].strip()
+        elif title and stripped.startswith("publisher:"):
+            publisher = stripped[len("publisher:"):].strip()
+    if title:
+        items.append((title, url, publisher))
+    return items
+
+
+def urls(text: str) -> list[str]:
+    return re.findall(r"https?://[^\s)\"'<>]+", text or "")
+
+
+def is_primary(url: str) -> bool:
+    try:
+        host = urlparse(url).netloc.lower().split(":")[0]
+    except ValueError:
+        return False
+    return any(host == domain or host.endswith("." + domain) for domain in PRIMARY_DOMAINS)
+
+
+def remove_reference_box(text: str) -> str:
+    return re.sub(
+        r"<!--\s*wp:group\b.*?-->.*?<!--\s*/wp:group\s*-->",
+        "",
+        text or "",
+        flags=re.S | re.I,
+    )
+
+
+def h2_sections(body: str) -> list[tuple[str, str]]:
+    matches = list(re.finditer(r"^##\s+(.+?)\s*$", body, flags=re.M))
+    result: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        result.append((match.group(1).strip(), body[match.end():end]))
+    return result
+
+
+def first_h1_body(body: str) -> str:
+    match = re.search(r"^#\s+.+?$", body, flags=re.M)
+    return body[match.end():] if match else body
+
+
+def intro_text(body: str) -> str:
+    after_h1 = first_h1_body(body)
+    before_h2 = re.split(r"^##\s+", after_h1, maxsplit=1, flags=re.M)[0]
+    return remove_reference_box(before_h2)
+
+
+def summary_text(body: str) -> str:
+    matches = list(re.finditer(r"^##\s+まとめ\s*$", body, flags=re.M))
+    return body[matches[-1].end():] if matches else ""
+
+
+def section_before_h3(section_body: str) -> str:
+    return re.split(r"^###\s+", section_body, maxsplit=1, flags=re.M)[0]
+
+
+def list_or_table(line: str) -> bool:
+    stripped = line.strip()
+    return bool(
+        re.match(r"^(?:[-*+]\s+|\d+[.)]\s+|\|)", stripped)
+        or (stripped.startswith("|") and stripped.endswith("|"))
+    )
+
+
+def list_table_errors(body: str) -> list[str]:
+    lines = body.splitlines()
+    errors: list[str] = []
+    index = 0
+    while index < len(lines):
+        if not list_or_table(lines[index]):
+            index += 1
+            continue
+        start = index
+        while index < len(lines) and (list_or_table(lines[index]) or not lines[index].strip()):
+            index += 1
+        end = index
+        before: list[str] = []
+        cursor = start - 1
+        while cursor >= 0 and lines[cursor].strip():
+            before.append(lines[cursor])
+            cursor -= 1
+        after: list[str] = []
+        cursor = end
+        while cursor < len(lines) and lines[cursor].strip():
+            after.append(lines[cursor])
+            cursor += 1
+        before_count = chars("\n".join(reversed(before)))
+        after_count = chars("\n".join(after))
+        if before_count < 150:
+            errors.append(f"箇条書き・表の直前の説明が150字未満です（{before_count}字）")
+        if after_count < 150:
+            errors.append(f"箇条書き・表の直後の説明が150字未満です（{after_count}字）")
+    return errors
+
+
+def body_faq_errors(body: str, front_faq: list[tuple[str, str]]) -> list[str]:
+    errors: list[str] = []
+    sections = h2_sections(body)
+    faq_body = next((section for title, section in sections if title == "FAQ"), "")
+    questions = list(re.finditer(r"^###\s+(.+?)\s*$", faq_body, flags=re.M))
+    if len(questions) < 2:
+        errors.append("## FAQにH3質問が2問以上ありません")
+        return errors
+    body_questions: list[str] = []
+    for index, question in enumerate(questions):
+        end = questions[index + 1].start() if index + 1 < len(questions) else len(faq_body)
+        answer = faq_body[question.end():end]
+        if chars(answer) == 0:
+            errors.append(f"FAQ『{question.group(1).strip()}』の回答がありません")
+        body_questions.append(compact(question.group(1)))
+    front_questions = [compact(question) for question, _ in front_faq]
+    if front_questions and body_questions[:len(front_questions)] != front_questions[:len(body_questions)]:
+        errors.append("本文FAQとフロントマターfaqの質問が一致していません")
+    return errors
+
+
+def geo_errors(front: str, body: str) -> list[str]:
+    errors: list[str] = []
+    answer = value_line(front, "answer")
+    if not answer:
+        errors.append("フロントマターanswerがありません")
+    elif not answer.endswith("。"):
+        errors.append("answerが「。」で終わっていません")
+    elif not 40 <= chars(answer) <= 60:
+        errors.append(f"answerが40〜60字ではありません（{chars(answer)}字）")
+
+    if re.search(r"(?m)^cve:", front) is None:
+        errors.append("フロントマターcveがありません")
+
+    front_faq = faq_items(front)
+    if len(front_faq) < 2:
+        errors.append("フロントマターfaqが2問未満です")
+    for question, answer_text in front_faq:
+        if not question or not answer_text:
+            errors.append("フロントマターfaqのq/aが未入力です")
+        if answer_text and not 70 <= chars(answer_text) <= 140:
+            errors.append(f"フロントマターFAQ回答が目安範囲外です（{chars(answer_text)}字）")
+
+    sources = source_items(front)
+    if len(sources) < 2:
+        errors.append("フロントマターsourcesが2件未満です")
+    if not any(is_primary(url) for _, url, _ in sources):
+        errors.append("フロントマターsourcesに一次情報ドメインがありません")
+
+    intro_count = chars(intro_text(body))
+    if not 250 <= intro_count <= 300:
+        errors.append(f"冒頭リードが250〜300字ではありません（{intro_count}字）")
+
+    sections = h2_sections(body)
+    if not any(title == "FAQ" for title, _ in sections):
+        errors.append("## FAQがありません")
+    errors.extend(body_faq_errors(body, front_faq))
+
+    reference_sections = [section for title, section in sections if title == "参考情報"]
+    reference_body = "\n".join(reference_sections)
+    if not reference_sections:
+        errors.append("## 参考情報がありません")
+    if not any(is_primary(url) for url in urls(reference_body)):
+        errors.append("## 参考情報に一次情報リンクがありません")
+
+    summary = summary_text(body)
+    if not summary:
+        errors.append("最後の## まとめがありません")
+    elif not 250 <= chars(summary) <= 300:
+        errors.append(f"## まとめが250〜300字ではありません（{chars(summary)}字）")
+    else:
+        if re.search(r"^##\s+", summary, flags=re.M):
+            errors.append("## まとめが記事の最後にありません")
+        if re.search(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", summary):
+            errors.append("## まとめに箇条書きがあります")
+
+    internal = {
+        url.rstrip(".,。")
+        for url in urls(body)
+        if urlparse(url).netloc.lower().endswith("cybernote.click")
+    }
+    if len(internal) < 3:
+        errors.append(f"CyberNote内部リンクが3本未満です（{len(internal)}本）")
+
+    boxes = re.findall(r"is-style-information-box", body)
+    if len(boxes) != 1:
+        errors.append(f"参照情報ボックスが1個ではありません（{len(boxes)}個）")
+
+    for title, section in sections:
+        if re.search(r"^###\s+", section, flags=re.M):
+            direct_count = chars(section_before_h3(section))
+            if not 100 <= direct_count <= 150:
+                errors.append(f"H2『{title}』直下リードが100〜150字ではありません（{direct_count}字）")
+
+    errors.extend(list_table_errors(body))
+    return errors
+
+
+def find_article(directory: Path, slug: str, no: str) -> Path | None:
+    candidates = [directory / f"{slug}.md"] if slug else []
+    try:
+        number = int(float(no))
+        candidates.extend([directory / f"{number:03d}.md", directory / f"{number}.md"])
+    except ValueError:
+        candidates.append(directory / f"{no}.md")
+    return next((path for path in candidates if path.exists()), None)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--input", required=True)
+    parser.add_argument("--articles-dir", default="articles")
+    parser.add_argument("--results", default="results/article_quality_results.csv")
+    parser.add_argument("--nos", default="")
+    parser.add_argument("--fail-on-error", action="store_true")
+    parser.add_argument("--include-unstarted", action="store_true")
+    parser.add_argument("--mode", choices=("geo", "legacy"), default="geo")
+    parser.add_argument("--sheet", default="", help=argparse.SUPPRESS)
+    parser.add_argument("--tolerance", type=float, default=0.03, help=argparse.SUPPRESS)
+    args = parser.parse_args()
+
+    wanted = {part for part in re.split(r"[,、\s]+", args.nos.strip()) if part} if args.nos.strip() else None
+    input_path = Path(args.input)
+    if not input_path.exists():
+        raise RuntimeError(f"入力ファイルが見つかりません: {input_path}")
+    with input_path.open(encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    outputs: list[dict[str, str | int]] = []
+    error_count = 0
+    for row in rows:
+        no = str(row.get("No", "")).strip()
+        if not no or (wanted is not None and no not in wanted and no.lstrip("0") not in wanted):
+            continue
+        title = str(row.get("記事タイトル", "")).strip()
+        slug = str(row.get("スラッグ", "")).strip()
+        article = find_article(Path(args.articles_dir), slug, no)
+        errors: list[str] = []
+        warnings: list[str] = []
+        core_count = 0
+        intro_count = 0
+        filename = str(article) if article else ""
+        if article is None:
+            errors.append("記事Markdownが見つかりません")
+        else:
+            markdown_text = article.read_text(encoding="utf-8")
+            front, body, front_errors = split_front_matter(markdown_text)
+            errors.extend(front_errors)
+            if not front_errors:
+                errors.extend(geo_errors(front, body))
+            core_count = chars(body)
+            intro_count = chars(intro_text(body))
+        status = "ERROR" if errors else ("WARN" if warnings else "OK")
+        error_count += int(status == "ERROR")
+        outputs.append({
+            "No": no,
+            "記事タイトル": title,
+            "article_file": filename,
+            "本文コア文字数": core_count,
+            "序文文字数": intro_count,
+            "status": status,
+            "errors": " / ".join(errors),
+            "warnings": " / ".join(warnings),
+            "mode": args.mode,
+        })
+
+    result_path = Path(args.results)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["No", "記事タイトル", "article_file", "本文コア文字数", "序文文字数", "status", "errors", "warnings", "mode"]
+    with result_path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(outputs)
+
+    for row in outputs:
+        print(f"[{row['status']}] {row['No']} core={row['本文コア文字数']} {row['記事タイトル']}")
+        if row["errors"]:
+            print("  ERROR:", row["errors"])
+        if row["warnings"]:
+            print("  WARN :", row["warnings"])
+    print(f"結果CSV: {result_path}")
+    return 1 if args.fail_on_error and error_count else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
