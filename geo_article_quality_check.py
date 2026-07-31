@@ -269,7 +269,7 @@ def geo_errors(front: str, body: str) -> list[str]:
     if len(internal) < 3:
         errors.append(f"CyberNote内部リンクが3本未満です（{len(internal)}本）")
 
-    boxes = re.findall(r'<div[^>]*class="[^"]*\\bis-style-information-box\\b"[^>]*>', body)
+    boxes = re.findall(r'<div[^>]*class="[^"]*\bis-style-information-box\b"[^>]*>', body)
     if len(boxes) != 1:
         errors.append(f"参照情報ボックスが1個ではありません（{len(boxes)}個）")
 
