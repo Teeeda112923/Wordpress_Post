@@ -111,6 +111,7 @@ jobs:
             --results "$RESULTS_DIR/article_quality_results.csv" \
             --nos "${{ steps.select.outputs.selected_no }}" \
             --include-unstarted \
+            --mode geo \
             --fail-on-error
 
       - name: Create WordPress draft
