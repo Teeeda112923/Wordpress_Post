@@ -12,6 +12,8 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 
+import geo_meta
+
 PRIMARY_DOMAINS = {
     "jvn.jp", "ipa.go.jp", "jpcert.or.jp", "nisc.go.jp", "npa.go.jp",
     "soumu.go.jp", "meti.go.jp", "ppc.go.jp", "nvd.nist.gov", "nist.gov",
@@ -51,9 +53,23 @@ def split_front_matter(md: str) -> tuple[str, str, list[str]]:
     return "", md, ["YAMLフロントマターの終了区切りがありません"]
 
 
+def unquote(value: str) -> str:
+    """YAMLの引用符を外す。
+
+    記事のフロントマターは値を "..." で囲んでいる。外さずに検査すると、
+    answer の末尾が「"」になって句点チェックに落ちる、URLの netloc が取れず
+    一次情報と判定されない、本文FAQとの質問比較が一致しない、といった
+    実体のないエラーになる（実際に5件中4件がこれだった）。
+    """
+    value = (value or "").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1].strip()
+    return value
+
+
 def value_line(front: str, key: str) -> str:
     match = re.search(rf"(?m)^{re.escape(key)}:\s*(.*)$", front)
-    return match.group(1).strip() if match else ""
+    return unquote(match.group(1)) if match else ""
 
 
 def faq_items(front: str) -> list[tuple[str, str]]:
@@ -65,10 +81,10 @@ def faq_items(front: str) -> list[tuple[str, str]]:
         if stripped.startswith("- q:"):
             if question:
                 items.append((question, answer))
-            question = stripped[4:].strip()
+            question = unquote(stripped[4:])
             answer = ""
         elif question and stripped.startswith("a:"):
-            answer = stripped[2:].strip()
+            answer = unquote(stripped[2:])
     if question:
         items.append((question, answer))
     return items
@@ -84,13 +100,13 @@ def source_items(front: str) -> list[tuple[str, str, str]]:
         if stripped.startswith("- title:"):
             if title:
                 items.append((title, url, publisher))
-            title = stripped[len("- title:"):].strip()
+            title = unquote(stripped[len("- title:"):])
             url = ""
             publisher = ""
         elif title and stripped.startswith("url:"):
-            url = stripped[len("url:"):].strip()
+            url = unquote(stripped[len("url:"):])
         elif title and stripped.startswith("publisher:"):
-            publisher = stripped[len("publisher:"):].strip()
+            publisher = unquote(stripped[len("publisher:"):])
     if title:
         items.append((title, url, publisher))
     return items
@@ -206,9 +222,26 @@ def body_faq_errors(body: str, front_faq: list[tuple[str, str]]) -> list[str]:
     return errors
 
 
-def geo_errors(front: str, body: str) -> list[str]:
+def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
+    """(エラー, 警告) を返す。
+
+    句点の抜けや本文FAQとの表記ずれなど、内容の判断が不要な不備は
+    geo_meta.normalize_front_matter() が投稿時と同じ手順で補正する。
+    補正できたものは警告に回し、内容を書き足す必要があるものだけエラーにする。
+    """
     errors: list[str] = []
-    answer = value_line(front, "answer")
+
+    raw = {
+        "answer": value_line(front, "answer"),
+        "cve": value_line(front, "cve"),
+        "faq": [{"q": q, "a": a} for q, a in faq_items(front)],
+        "sources": [
+            {"title": t, "url": u, "publisher": p} for t, u, p in source_items(front)
+        ],
+    }
+    normalized, warnings = geo_meta.normalize_front_matter(raw, body)
+
+    answer = normalized.get("answer", "")
     if not answer:
         errors.append("フロントマターanswerがありません")
     elif not answer.endswith("。"):
@@ -219,16 +252,19 @@ def geo_errors(front: str, body: str) -> list[str]:
     if re.search(r"(?m)^cve:", front) is None:
         errors.append("フロントマターcveがありません")
 
-    front_faq = faq_items(front)
+    front_faq = [(r.get("q", ""), r.get("a", "")) for r in normalized.get("faq", [])]
     if len(front_faq) < 2:
         errors.append("フロントマターfaqが2問未満です")
     for question, answer_text in front_faq:
         if not question or not answer_text:
             errors.append("フロントマターfaqのq/aが未入力です")
-        if answer_text and not 70 <= chars(answer_text) <= 140:
+        if answer_text and not 60 <= chars(answer_text) <= 140:
             errors.append(f"フロントマターFAQ回答が目安範囲外です（{chars(answer_text)}字）")
 
-    sources = source_items(front)
+    sources = [
+        (r.get("title", ""), r.get("url", ""), r.get("publisher", ""))
+        for r in normalized.get("sources", [])
+    ]
     if len(sources) < 2:
         errors.append("フロントマターsourcesが2件未満です")
     if not any(is_primary(url) for _, url, _ in sources):
@@ -280,7 +316,7 @@ def geo_errors(front: str, body: str) -> list[str]:
                 errors.append(f"H2『{title}』直下リードが100〜150字ではありません（{direct_count}字）")
 
     errors.extend(list_table_errors(body))
-    return errors
+    return errors, warnings
 
 
 def find_article(directory: Path, slug: str, no: str) -> Path | None:
@@ -334,7 +370,9 @@ def main() -> int:
             front, body, front_errors = split_front_matter(markdown_text)
             errors.extend(front_errors)
             if not front_errors:
-                errors.extend(geo_errors(front, body))
+                geo_error_list, geo_warnings = geo_errors(front, body)
+                errors.extend(geo_error_list)
+                warnings.extend(geo_warnings)
             core_count = chars(body)
             intro_count = chars(intro_text(body))
         status = "ERROR" if errors else ("WARN" if warnings else "OK")

@@ -75,6 +75,12 @@ _SOURCE_HEADINGS = ("参考情報", "参考・出典", "出典元", "出典", "�
 _ANSWER_MIN = 40
 _ANSWER_MAX = 60
 
+# フロントマターFAQ回答の目安（geo_article_quality_check.py と同じ基準）。
+# 下限は当初70字だったが、1文で簡潔に答えた回答が60台後半で落ちる例が続いたため
+# 60字に緩めた（GEOプラグイン側に70字の制約があるわけではない）。
+_FAQ_ANSWER_MIN = 60
+_FAQ_ANSWER_MAX = 140
+
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^\s)]+)\)")
 _CVE_RE = re.compile(r"CVE-\d{4}-\d{4,}", re.I)
 _JVN_RE = re.compile(r"JVN(?:VU)?#?\d+", re.I)
@@ -364,6 +370,103 @@ def ensure_primary_source(rows: list[dict], cves: list[str]) -> list[dict]:
 
 
 # --------------------------------------------------------------------------- #
+# フロントマターの自動補正
+# --------------------------------------------------------------------------- #
+def normalize_front_matter(front: dict, body: str) -> tuple[dict, list[str]]:
+    """フロントマターの機械的な不備を補正し、(補正後, 補正内容) を返す。
+
+    記事はChatGPTが執筆するため、句点の抜けや本文FAQとの表記ずれといった
+    「内容は正しいが形式が揃っていない」不備が混ざる。人手で直すのは手間な割に
+    判断の余地がないため、ここで機械的に揃える。
+
+    補正するのは次の3点だけで、内容そのものは作らない。
+      1. answer が句点で終わっていない → 末尾を整えて「。」を付ける
+      2. 本文の H2「FAQ」の質問とフロントマターの質問がずれている
+         → 本文側を正として質問を合わせる（回答は本文側が長い場合のみ採用）
+      3. sources に一次情報が無い → CVEのNVD詳細ページを補う
+
+    文字数不足のように内容を書き足す必要があるものは補正しない（品質チェッカー側で
+    エラーとして検出させる）。
+    """
+    fixed = dict(front or {})
+    notes: list[str] = []
+
+    # --- 1. answer の句点 ---------------------------------------------------
+    answer = _safe(fixed.get("answer")) if isinstance(fixed.get("answer"), str) else ""
+    if answer:
+        # 末尾の「…」や読点を落としたうえで句点を付け直す
+        trimmed = answer.rstrip("。．.…、,， 　")
+        if trimmed:
+            candidate = trimmed + "。"
+            if candidate != answer:
+                fixed["answer"] = candidate
+                notes.append("answerの末尾に句点を補いました")
+
+    # --- 2. FAQ を本文に合わせる -------------------------------------------
+    body_faq = extract_faq(body)
+    front_faq = [
+        {"q": _safe(r.get("q")), "a": _safe(r.get("a"))}
+        for r in (fixed.get("faq") or [])
+        if isinstance(r, dict)
+    ]
+    if body_faq and front_faq:
+        merged: list[dict] = []
+        changed_q = False
+        changed_a = False
+        for index, row in enumerate(front_faq):
+            question, answer_text = row["q"], row["a"]
+            if index < len(body_faq):
+                body_q = body_faq[index].get("q", "")
+                body_a = body_faq[index].get("a", "")
+                if body_q and _compact(body_q) != _compact(question):
+                    question = body_q
+                    changed_q = True
+                # 回答は本文側のほうが目安に収まる場合だけ差し替える
+                if body_a and not _in_faq_range(answer_text) and _in_faq_range(body_a):
+                    answer_text = body_a
+                    changed_a = True
+            merged.append({"q": question, "a": answer_text})
+        fixed["faq"] = merged
+        if changed_q:
+            notes.append("FAQの質問を本文のH3見出しに合わせました")
+        if changed_a:
+            notes.append("FAQの回答を本文の内容に差し替えました")
+
+    # --- 3. 一次情報の補完 --------------------------------------------------
+    sources = [
+        {
+            "title": _safe(r.get("title")),
+            "url": _safe(r.get("url")),
+            "publisher": _safe(r.get("publisher")),
+        }
+        for r in (fixed.get("sources") or [])
+        if isinstance(r, dict) and _safe(r.get("url"))
+    ]
+    if sources and not any(is_primary_source(r["url"]) for r in sources):
+        raw_cve = fixed.get("cve")
+        cves = (
+            [c.strip() for c in raw_cve.split(",") if c.strip()]
+            if isinstance(raw_cve, str)
+            else []
+        )
+        completed = ensure_primary_source(sources, cves)
+        if len(completed) != len(sources):
+            fixed["sources"] = completed
+            notes.append("sourcesに一次情報（NVD詳細ページ）を補いました")
+
+    return fixed, notes
+
+
+def _compact(text: str) -> str:
+    """空白を除いた比較用の文字列（品質チェッカーの compact と同じ）。"""
+    return re.sub(r"\s+", "", text or "")
+
+
+def _in_faq_range(text: str) -> bool:
+    return _FAQ_ANSWER_MIN <= _visible_len(_strip_inline_md(text)) <= _FAQ_ANSWER_MAX
+
+
+# --------------------------------------------------------------------------- #
 # メタの組み立て
 # --------------------------------------------------------------------------- #
 def build_geo_meta(
@@ -372,8 +475,11 @@ def build_geo_meta(
     """記事Markdownから GEO Kit 用メタ（REST API 送信用）を組み立てる。
 
     フロントマターがあればそれを優先し、無い項目だけ本文から補う。
+    句点の抜けなど機械的な不備は normalize_front_matter() で揃えてから使うため、
+    品質チェッカーが通した内容とここで投稿する内容は一致する。
     """
     front, body = parse_front_matter(md_text)
+    front, _ = normalize_front_matter(front, body)
 
     # --- 結論 -------------------------------------------------------------
     answer = _safe(front.get("answer")) if isinstance(front.get("answer"), str) else ""
