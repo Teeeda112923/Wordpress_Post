@@ -258,7 +258,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     for question, answer_text in front_faq:
         if not question or not answer_text:
             errors.append("フロントマターfaqのq/aが未入力です")
-        if answer_text and not 70 <= chars(answer_text) <= 140:
+        if answer_text and not 60 <= chars(answer_text) <= 140:
             errors.append(f"フロントマターFAQ回答が目安範囲外です（{chars(answer_text)}字）")
 
     sources = [

@@ -75,8 +75,10 @@ _SOURCE_HEADINGS = ("参考情報", "参考・出典", "出典元", "出典", "�
 _ANSWER_MIN = 40
 _ANSWER_MAX = 60
 
-# フロントマターFAQ回答の目安（geo_article_quality_check.py と同じ基準）
-_FAQ_ANSWER_MIN = 70
+# フロントマターFAQ回答の目安（geo_article_quality_check.py と同じ基準）。
+# 下限は当初70字だったが、1文で簡潔に答えた回答が60台後半で落ちる例が続いたため
+# 60字に緩めた（GEOプラグイン側に70字の制約があるわけではない）。
+_FAQ_ANSWER_MIN = 60
 _FAQ_ANSWER_MAX = 140
 
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^\s)]+)\)")
