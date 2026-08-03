@@ -697,6 +697,45 @@ def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> 
                 f"[OK] {no3} {image_path} exists, PNG, {width}x{height}, ratio 3:2{size_note}{name_note}")
 
 
+def detect_block(response: requests.Response) -> str:
+    """応答が「サーバー側の遮断」かどうかを判定し、理由を返す（通常時は空文字）。
+
+    Imunify360 の応答は一定しない。HTTP 200 で
+    {"message": "Access denied by Imunify360 ..."} を返すこともあれば、
+    ステータスは 200 のままHTMLのチャレンジページを返すこともある。
+    後者は「JSON以外の応答」としか分からず遮断だと判別できなかった。
+    REST API は必ずJSONを返すため、HTMLが返った時点で遮断とみなす。
+    """
+    try:
+        text = (response.text or "")[:4000]
+    except Exception:
+        return ""
+    lowered = text.lower()
+
+    if "imunify" in lowered or "bot-protection" in lowered or "bot protection" in lowered:
+        return (
+            "Imunify360が自動化アクセスを遮断しました。"
+            "WordPress側でGitHub ActionsからのREST APIアクセス許可を確認してください。"
+        )
+
+    ctype = ""
+    try:
+        ctype = safe_str(response.headers.get("Content-Type")).lower()
+    except Exception:
+        pass
+    stripped = lowered.lstrip()
+    if "text/html" in ctype or stripped.startswith("<!doctype html") or stripped.startswith("<html"):
+        return (
+            f"WordPress REST APIがHTMLを返しました（HTTP {response.status_code}）。"
+            "サーバー側のボット対策・WAFに遮断された可能性があります。"
+            "WP_USER_AGENT の設定、または /wp-json/ の除外設定を確認してください。"
+        )
+
+    if response.status_code in (403, 406, 429):
+        return f"サーバー側でリクエストが遮断されました（HTTP {response.status_code}）"
+    return ""
+
+
 def extract_api_error(response: requests.Response) -> str:
     """WordPress REST API のエラーJSONから code/message を読みやすく抽出する。"""
     if response.status_code == 415:
@@ -826,6 +865,24 @@ def update_excel_results(
 # --------------------------------------------------------------------------- #
 # WordPress クライアント
 # --------------------------------------------------------------------------- #
+# Imunify360（サーバー側のボット対策）は User-Agent を見て自動化を判定する。
+# "Mozilla/5.0 WordPress-Auto-Post/2.0" のように自動投稿ツールを名乗る文字列は
+# 遮断されるため、既定は通常のブラウザと同じ文字列を送る。
+# 環境変数 WP_USER_AGENT を設定すればそちらが優先される。
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+
+class WordPressBlockedError(RuntimeError):
+    """サーバー側（Imunify360 等）にリクエストを遮断された状態。
+
+    この例外が出た時点で以降のリクエストも通らないため、
+    呼び出し側はリトライせず、その実行を打ち切ること。
+    """
+
+
 class WordPressClient:
     def __init__(self, base_url: str, username: str, app_password: str) -> None:
         self.base_url = normalize_url(base_url)
@@ -833,7 +890,7 @@ class WordPressClient:
         self.session = requests.Session()
         self.session.headers.update(basic_auth_header(username, app_password))
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 WordPress-Auto-Post/2.0",
+            "User-Agent": os.environ.get("WP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
             "Accept": "application/json",
             "Content-Type": "application/json; charset=utf-8",
             # サーバー側キャッシュ（LiteSpeed等）から古い応答を受け取らない
@@ -868,6 +925,13 @@ class WordPressClient:
             params.setdefault("_nocache", str(int(time.time() * 1000)))
             kwargs["params"] = params
         response = self.session.request(method, url, **kwargs)
+
+        # 遮断はステータスコードの前に判定する。Imunify360 は HTTP 200 のまま
+        # HTMLのチャレンジページやJSONの拒否メッセージを返すことがあるため。
+        blocked = detect_block(response)
+        if blocked:
+            raise WordPressBlockedError(blocked)
+
         if response.status_code >= 400:
             raise RuntimeError(f"WordPress API エラー {extract_api_error(response)}")
         if not response.text:
@@ -878,12 +942,6 @@ class WordPressClient:
             raise RuntimeError(
                 f"WordPress APIがJSON以外の応答を返しました（HTTP {response.status_code}）"
             ) from exc
-        message = safe_str(data.get("message")) if isinstance(data, dict) else ""
-        if "Access denied by Imunify360 bot-protection" in message:
-            raise RuntimeError(
-                "Imunify360が自動化アクセスを遮断しました。"
-                "WordPress側でGitHub ActionsからのREST APIアクセス許可を確認してください。"
-            )
         return data
 
     def verify_auth(self) -> str:
@@ -1985,6 +2043,16 @@ def main() -> int:
                 result["message"] = f"新規投稿しました {note}".strip()
                 print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
 
+        except WordPressBlockedError as exc:
+            # サーバー側に遮断された状態。次の記事へ進んでも必ず失敗するうえ、
+            # 連打はボット判定を強めるだけなので、この実行はここで打ち切る。
+            result["status"] = "error"
+            result["message"] = str(exc)
+            print(f"[ERROR] No.{no_value} {title} -> {exc}")
+            print("[ERROR] サーバー側の遮断を検知したため、残りの記事は処理しません")
+            results.append(result)
+            processed += 1
+            break
         except Exception as exc:
             result["status"] = "error"
             result["message"] = str(exc)

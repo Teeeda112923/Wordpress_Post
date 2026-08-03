@@ -120,6 +120,8 @@ jobs:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          # ボット対策に弾かれる場合はリポジトリ変数 WP_USER_AGENT で上書きする
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           DRY_RUN_FLAG=""
@@ -311,6 +313,8 @@ jobs:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          # ボット対策に弾かれる場合はリポジトリ変数 WP_USER_AGENT で上書きする
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
           INPUT_TARGET_DATE: ${{ inputs.target_date }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
