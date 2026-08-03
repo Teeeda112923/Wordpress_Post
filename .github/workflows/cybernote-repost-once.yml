@@ -1,0 +1,286 @@
+name: CyberNote One-time Repost
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  repost:
+    if: ${{ contains(github.event.head_commit.message, '[cybernote-repost]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+      WP_USERNAME: ${{ secrets.WP_USERNAME }}
+      WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+      WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Repost unpublished CyberNote articles
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import json
+          import os
+          import shlex
+          import subprocess
+          import sys
+          import time
+          from pathlib import Path
+
+          repo = Path(os.environ["REPO_ROOT"])
+          temp = Path(os.environ["RUNNER_TEMP_DIR"]) / "cybernote-repost-results"
+          temp.mkdir(parents=True, exist_ok=True)
+          ledger_path = repo / "projects/cybernote-security-news/data/news_ledger.csv"
+          publish_script = repo / "projects/cybernote-security-news/src/publish_news.py"
+          post_script = repo / "wp_auto_post.py"
+          targets = [4, 14, 15, 16, 18, 19]
+
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+          by_no = {int(float(row["No"])): row for row in rows if str(row.get("No", "")).strip()}
+
+          def run(command):
+              print("$ " + " ".join(shlex.quote(str(x)) for x in command), flush=True)
+              completed = subprocess.run(
+                  [str(x) for x in command],
+                  cwd=repo,
+                  text=True,
+                  capture_output=True,
+              )
+              if completed.stdout:
+                  print(completed.stdout, end="", flush=True)
+              if completed.stderr:
+                  print(completed.stderr, end="", file=sys.stderr, flush=True)
+              print(f"[exit={completed.returncode}]", flush=True)
+              return completed.returncode
+
+          def read_rows(root):
+              found = []
+              for path in sorted(root.rglob("*.csv")):
+                  try:
+                      with path.open(encoding="utf-8-sig", newline="") as handle:
+                          found.extend(dict(row) for row in csv.DictReader(handle))
+                  except Exception as exc:
+                      print(f"[WARN] 結果CSVを読めません: {path}: {exc}", file=sys.stderr)
+              return found
+
+          publish_rows = {}
+          fallback = []
+          for no in targets:
+              row = by_no.get(no)
+              if not row:
+                  print(f"[ERROR] 管理簿にNo.{no}がありません。", file=sys.stderr)
+                  fallback.append(no)
+                  continue
+              no_dir = temp / f"publish-{no}"
+              no_dir.mkdir(parents=True, exist_ok=True)
+              command = [
+                  sys.executable,
+                  publish_script,
+                  "--ledger", ledger_path,
+                  "--repo-root", repo,
+                  "--articles-dir", "projects/cybernote-security-news/articles",
+                  "--eyecatches-dir", "projects/cybernote-security-news/eyecatches",
+                  "--results-dir", no_dir,
+                  "--date", row.get("公開予定日", "").strip(),
+                  "--no", str(no),
+              ]
+              run(command)
+              rows_for_no = [r for r in read_rows(no_dir) if str(r.get("No", "")).strip().lstrip("0") == str(no)]
+              result = rows_for_no[-1] if rows_for_no else {}
+              status = (result.get("status") or "").strip().lower()
+              publish_rows[no] = result
+              if status not in {"published", "already_published"}:
+                  fallback.append(no)
+              else:
+                  print(f"[INFO] No.{no}: draftを公開しました。", flush=True)
+              time.sleep(1)
+
+          if fallback:
+              no_spec = ",".join(str(no) for no in fallback)
+              generic_dir = temp / "generic"
+              generic_dir.mkdir(parents=True, exist_ok=True)
+              command = [
+                  sys.executable,
+                  post_script,
+                  "--input", ledger_path,
+                  "--articles-dir", "projects/cybernote-security-news/articles",
+                  "--images-dir", "projects/cybernote-security-news/eyecatches",
+                  "--post-status", "publish",
+                  "--write-mode", "upsert",
+                  "--category", "サイバーセキュリティ",
+                  "--nos", no_spec,
+                  "--limit", "0",
+                  "--skip-auth-check",
+                  "--skip-internal-link-resolution",
+                  "--output-dir", generic_dir,
+                  "--sleep", "1",
+              ]
+              print(f"[INFO] draft公開で処理できなかったNo.を新規/更新投稿します: {no_spec}", flush=True)
+              run(command)
+
+          all_rows = read_rows(temp)
+          successful = {}
+          for result in all_rows:
+              raw_no = result.get("No") or result.get("no") or ""
+              try:
+                  no = int(float(str(raw_no).strip()))
+              except ValueError:
+                  continue
+              if no not in targets:
+                  continue
+              status = (result.get("status") or "").strip().lower()
+              if status in {"published", "already_published", "posted", "updated"}:
+                  successful[no] = {
+                      "status": status,
+                      "post_id": result.get("post_id", ""),
+                      "post_link": result.get("post_link", ""),
+                      "published_at": result.get("published_at_jst", ""),
+                      "posted_at": result.get("posted_at", ""),
+                      "updated_at": result.get("updated_at", ""),
+                  }
+
+          output = Path(os.environ["RUNNER_TEMP_DIR"]) / "cybernote-repost-results.json"
+          output.write_text(json.dumps(successful, ensure_ascii=False, indent=2), encoding="utf-8")
+          print("[INFO] 成功結果: " + json.dumps(successful, ensure_ascii=False), flush=True)
+          missing = [str(no) for no in targets if no not in successful]
+          if missing:
+              print("[WARN] 未完了のNo.: " + ", ".join(missing), file=sys.stderr, flush=True)
+          else:
+              print("[INFO] 対象6件の再投稿処理が完了しました。", flush=True)
+          PY
+
+      - name: Update ledger for successful reposts
+        if: always()
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import json
+          import os
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+
+          root = Path(os.environ["REPO_ROOT"])
+          result_path = Path(os.environ["RUNNER_TEMP_DIR"]) / "cybernote-repost-results.json"
+          if not result_path.exists():
+              print("再投稿結果がないため管理簿を更新しません。")
+              raise SystemExit(0)
+          results = json.loads(result_path.read_text(encoding="utf-8"))
+          if not results:
+              print("成功した再投稿がないため管理簿を更新しません。")
+              raise SystemExit(0)
+
+          ledger_path = root / "projects/cybernote-security-news/data/news_ledger.csv"
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+
+          now = dt.datetime.now(ZoneInfo("Asia/Tokyo")).strftime("%Y-%m-%d %H:%M:%S")
+          changed = False
+          for row in ledger_rows:
+              try:
+                  no = str(int(float(str(row.get("No", "")).strip())))
+              except ValueError:
+                  continue
+              result = results.get(no)
+              if not result:
+                  continue
+              row["投稿ステータス"] = "公開済み"
+              row["WP投稿ID"] = str(result.get("post_id") or row.get("WP投稿ID") or "")
+              row["WP投稿URL"] = str(result.get("post_link") or row.get("WP投稿URL") or "")
+              row["最終更新日時"] = str(
+                  result.get("published_at")
+                  or result.get("posted_at")
+                  or result.get("updated_at")
+                  or now
+              )
+              row["エラー内容"] = ""
+              changed = True
+
+          if not changed:
+              print("管理簿に更新対象がありません。")
+              raise SystemExit(0)
+
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          print(f"管理簿を再投稿成功分 {len(results)}件について更新しました。")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add projects/cybernote-security-news/data/news_ledger.csv
+          if git diff --cached --quiet; then
+            echo "管理簿変更なし"
+          else
+            git commit -m "Update CyberNote repost statuses [skip ci]"
+            git push
+          fi
+
+      - name: Validate repost outcome
+        if: always()
+        env:
+          RUNNER_TEMP_DIR: ${{ runner.temp }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          result_path = Path(os.environ["RUNNER_TEMP_DIR"]) / "cybernote-repost-results.json"
+          results = json.loads(result_path.read_text(encoding="utf-8")) if result_path.exists() else {}
+          expected = {4, 14, 15, 16, 18, 19}
+          done = {int(no) for no in results}
+          missing = sorted(expected - done)
+          if missing:
+              raise SystemExit("再投稿できなかったNo.: " + ", ".join(map(str, missing)))
+          print("対象6件の再投稿結果を確認しました。")
+          PY
+
+      - name: Remove one-time workflow
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f .github/workflows/cybernote-repost-once.yml ]; then
+            git rm .github/workflows/cybernote-repost-once.yml
+            git commit -m "Remove one-time CyberNote repost workflow [skip ci]"
+            git push
+          else
+            echo "一時ワークフローは既に削除されています。"
+          fi
+
+      - name: Upload repost logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybernote-repost-results
+          path: ${{ runner.temp }}/cybernote-repost-results
+          if-no-files-found: warn
+          retention-days: 14
