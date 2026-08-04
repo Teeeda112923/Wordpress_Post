@@ -1,5 +1,10 @@
 name: CyberNote Security News
 
+# 下書きを作ってから別枠で公開する2段階運用をやめ、1回の実行で公開まで行う。
+# 下書きを人手で確認する運用になっていなかったため、公開段階（投稿の検索＋
+# ステータス変更で1記事あたり2〜3リクエスト）は実質ただの余分なアクセスだった。
+# WordPress側のボット対策に送るリクエストを減らすことを優先する。
+# 既存の下書きを公開したいときは stage=publish を手動実行する。
 on:
   schedule:
     # 08:30 JST
@@ -8,21 +13,15 @@ on:
     - cron: "30 2 * * *"
     # 14:30 JST
     - cron: "30 5 * * *"
-    # 09:00 JST
-    - cron: "0 0 * * *"
-    # 12:20 JST
-    - cron: "20 3 * * *"
-    # 15:00 JST
-    - cron: "0 6 * * *"
   workflow_dispatch:
     inputs:
       stage:
-        description: "実行段階"
+        description: "実行段階（post=記事を公開まで行う / publish=既存の下書きを公開する）"
         type: choice
         required: true
-        default: "draft"
+        default: "post"
         options:
-          - draft
+          - post
           - publish
       target_date:
         description: "対象日（YYYY-MM-DD、空欄なら日本時間の当日）"
@@ -49,14 +48,14 @@ env:
   RESULTS_DIR: projects/cybernote-security-news/results
 
 jobs:
-  draft:
+  post:
     if: >-
       (github.event_name == 'schedule' && (
         github.event.schedule == '30 23 * * *' ||
         github.event.schedule == '30 2 * * *' ||
         github.event.schedule == '30 5 * * *'
       )) ||
-      (github.event_name == 'workflow_dispatch' && inputs.stage == 'draft')
+      (github.event_name == 'workflow_dispatch' && inputs.stage == 'post')
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -91,7 +90,7 @@ jobs:
             --articles-dir "$ARTICLES_DIR" \
             --eyecatches-dir "$IMAGES_DIR" \
             --date "$TARGET_DATE" \
-            --stage draft)"
+            --stage draft)"   # select_news の draft = 未投稿の行を選ぶ、の意味
 
           echo "target_date=$TARGET_DATE"
           echo "selected_no=$NEWS_NO" >> "$GITHUB_OUTPUT"
@@ -114,7 +113,7 @@ jobs:
             --mode geo \
             --fail-on-error
 
-      - name: Create WordPress draft
+      - name: Publish to WordPress
         if: steps.select.outputs.selected_no != ''
         env:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
@@ -133,7 +132,7 @@ jobs:
             --input "$LEDGER" \
             --articles-dir "$ARTICLES_DIR" \
             --images-dir "$IMAGES_DIR" \
-            --post-status draft \
+            --post-status publish \
             --write-mode create_only \
             --category "サイバーセキュリティ" \
             --nos "${{ steps.select.outputs.selected_no }}" \
@@ -176,10 +175,10 @@ jobs:
           if status not in {"posted", "updated", "dry-run"}:
               print(f"[ERROR] No.{selected}: 予期しない結果ステータス: {status}", file=sys.stderr)
               sys.exit(1)
-          print(f"WordPress下書き処理: {status}")
+          print(f"WordPress投稿処理: {status}")
           PY
 
-      - name: Update ledger after draft
+      - name: Update ledger after publish
         if: steps.select.outputs.selected_no != ''
         env:
           TARGET_NO: ${{ steps.select.outputs.selected_no }}
@@ -217,7 +216,7 @@ jobs:
           changed = False
           for row in ledger_rows:
               if str(row.get("No", "")).strip() == selected:
-                  row["投稿ステータス"] = "下書き済み"
+                  row["投稿ステータス"] = "公開済み"
                   row["WP投稿ID"] = result.get("post_id", "")
                   row["WP投稿URL"] = result.get("post_link", "")
                   row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -232,7 +231,7 @@ jobs:
               writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
               writer.writeheader()
               writer.writerows(ledger_rows)
-          print(f"管理簿を下書き済みに更新しました: No.{selected}")
+          print(f"管理簿を公開済みに更新しました: No.{selected}")
           PY
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -240,7 +239,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "管理簿変更なし"
           else
-            git commit -m "Update CyberNote draft status"
+            git commit -m "Update CyberNote publish status"
             git push
           fi
 
@@ -248,7 +247,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cybernote-security-news-draft-results
+          name: cybernote-security-news-post-results
           path: |
             ${{ env.RESULTS_DIR }}/*.csv
           if-no-files-found: warn
