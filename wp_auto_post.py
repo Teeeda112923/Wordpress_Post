@@ -1000,8 +1000,14 @@ class WordPressClient:
             body["parent"] = parent
         url = f"{self.api_base}/{endpoint}"
         resp = self.session.request("POST", url, json=body, timeout=90)
-        # Imunify360等がHTTP 200で遮断メッセージを返す場合があるため、
-        # ステータスコードより先にJSON本文を確認する。
+        # 遮断はステータスコードの前に判定する。request() と同じ detect_block() を
+        # 使い、JSONの拒否メッセージだけでなくHTMLのチャレンジページも拾う。
+        # ここで RuntimeError を投げていたため、遮断でも WordPressBlockedError に
+        # ならず、台帳ループの打ち切りが働いていなかった。
+        blocked = detect_block(resp)
+        if blocked:
+            raise WordPressBlockedError(blocked)
+
         err: dict[str, Any] = {}
         try:
             parsed = resp.json()
@@ -1009,12 +1015,6 @@ class WordPressClient:
                 err = parsed
         except Exception:
             err = {}
-        message = safe_str(err.get("message"))
-        if "Access denied by Imunify360 bot-protection" in message:
-            raise RuntimeError(
-                "Imunify360が自動化アクセスを遮断しました。"
-                "WordPress側でGitHub ActionsからのREST APIアクセス許可を確認してください。"
-            )
         if resp.status_code < 400:
             if err.get("id"):
                 return int(err["id"])
