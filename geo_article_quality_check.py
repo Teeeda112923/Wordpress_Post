@@ -184,6 +184,8 @@ def list_table_errors(body: str) -> list[str]:
         end = index
         before: list[str] = []
         cursor = start - 1
+        while cursor >= 0 and not lines[cursor].strip():
+            cursor -= 1
         while cursor >= 0 and lines[cursor].strip():
             before.append(lines[cursor])
             cursor -= 1
