@@ -1839,6 +1839,19 @@ def main() -> int:
             processed += 1
             continue
 
+        # 画像を読み込めない場合は、WordPressへのアクセス自体を行わずエラーにする。
+        # 拡張子だけがPNGでも実体が破損していると、メディア登録やサムネイル生成で
+        # サーバー側の分かりにくいエラーになるため、投稿結果で明示的に失敗させる。
+        # WARN（PNG以外・比率違い）は従来どおり投稿を続ける。
+        if img_chk["level"] == "NG":
+            result["status"] = "error"
+            result["message"] = img_chk["error_content"]
+            result["error_content"] = img_chk["error_content"]
+            results.append(result)
+            processed += 1
+            print(f"[ERROR] No.{no_value} {title} -> {img_chk['error_content']}")
+            continue
+
         if article_path is None:
             result["status"] = "skipped"
             result["message"] = "本文 Markdown が見つかりません。"

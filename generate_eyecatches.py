@@ -7,6 +7,7 @@ import base64
 import datetime as dt
 import io
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -83,7 +84,9 @@ def load_api_key() -> str:
 
 
 def to_png(image_bytes: bytes) -> bytes:
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    with Image.open(io.BytesIO(image_bytes)) as source:
+        source.load()
+        image = source.convert("RGB")
     target_ratio = TARGET_WIDTH / TARGET_HEIGHT
     source_ratio = image.width / image.height
     if source_ratio > target_ratio:
@@ -97,7 +100,63 @@ def to_png(image_bytes: bytes) -> bytes:
     image = image.resize((TARGET_WIDTH, TARGET_HEIGHT), Image.LANCZOS)
     output = io.BytesIO()
     image.save(output, "PNG")
-    return output.getvalue()
+    png_bytes = output.getvalue()
+    # API応答や変換処理が不完全な場合は、保存前に検知して呼び出し側で再試行する。
+    with Image.open(io.BytesIO(png_bytes)) as verify:
+        verify.load()
+        if verify.format != "PNG":
+            raise RuntimeError("PNG変換後の画像形式を検証できません")
+        if verify.size != (TARGET_WIDTH, TARGET_HEIGHT):
+            raise RuntimeError(
+                f"PNG変換後の画像サイズが不正です: {verify.size[0]}x{verify.size[1]}"
+            )
+    return png_bytes
+
+
+def write_verified_png(output_path: Path, png_bytes: bytes) -> None:
+    """PNGを検証済みの一時ファイルからアトミックに置き換える。"""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=output_path.parent, prefix=f".{output_path.name}.",
+            suffix=".tmp", delete=False
+        ) as handle:
+            temp_name = handle.name
+            handle.write(png_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        with Image.open(temp_name) as verify:
+            verify.load()
+            if verify.format != "PNG" or verify.size != (TARGET_WIDTH, TARGET_HEIGHT):
+                raise RuntimeError("保存後のPNG検証に失敗しました")
+
+        os.replace(temp_name, output_path)
+        temp_name = None
+    finally:
+        if temp_name:
+            Path(temp_name).unlink(missing_ok=True)
+
+
+def generate_and_save(client: Any, prompt: str, model: str, size: str,
+                      quality: str, max_retries: int, output_path: Path) -> None:
+    """生成・変換・保存後検証を一連で行い、失敗時は再試行する。"""
+    last_error: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            # 再試行はこの関数で一元管理し、1回の試行ではAPIを1回だけ呼ぶ。
+            raw = generate_one(client, prompt, model, size, quality, 0)
+            png_bytes = to_png(raw)
+            write_verified_png(output_path, png_bytes)
+            return
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries:
+                wait = 2 ** (attempt + 1)
+                print(f"  画像保存検証リトライ {attempt + 1}/{max_retries}: {exc}")
+                time.sleep(wait)
+    raise RuntimeError(str(last_error))
 
 
 def generate_one(client: Any, prompt: str, model: str, size: str,
@@ -230,9 +289,10 @@ def main() -> int:
             print(f"[DRY-RUN] {no:03d} -> {output_path}")
         else:
             try:
-                raw = generate_one(client, full_prompt, args.model, args.size,
-                                   args.quality, args.max_retries)
-                output_path.write_bytes(to_png(raw))
+                generate_and_save(
+                    client, full_prompt, args.model, args.size,
+                    args.quality, args.max_retries, output_path
+                )
                 result["status"] = "generated"
                 result["width"] = TARGET_WIDTH
                 result["height"] = TARGET_HEIGHT
