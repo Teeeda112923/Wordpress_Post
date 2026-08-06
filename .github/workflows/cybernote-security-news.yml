@@ -16,10 +16,6 @@ name: CyberNote Security News
 # 前日以前の取りこぼしは拾わない。古い記事を出したいときは target_date を
 # 指定して手動実行する（脆弱性情報は鮮度が重要なため、自動では拾わせない）。
 on:
-  # テスト投稿を1件だけ起動するための一時トリガー
-  push:
-    paths:
-      - ".github/workflows/cybernote-security-news.yml"
   schedule:
     # 08:30 JST
     - cron: "30 23 * * *"
@@ -86,8 +82,7 @@ jobs:
         github.event.schedule == '30 11 * * *' ||
         github.event.schedule == '30 13 * * *'
       )) ||
-      github.event_name == 'workflow_dispatch' ||
-      github.event_name == 'push'
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     # 遮断時の再試行（既定 10分 → 20分）で最大30分待つため、30分では待ち時間だけで
     # 使い切ってしまう。タイムアウトが先に来ると .wp_blocked が書かれる前にジョブが死に、
