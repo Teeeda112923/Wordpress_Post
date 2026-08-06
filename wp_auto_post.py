@@ -683,6 +683,18 @@ def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> 
         return make("NG", "要画像確認", "アイキャッチ画像のサイズが取得できません",
                     f"[NG] {no3} {image_path} cannot read image ({exc})")
 
+    # Image.open() はヘッダ（PNGならIHDR）しか読まないため、画素データが途中で
+    # 切れていても形式とサイズは取得できてしまう。load() で実体まで読み切って検証する。
+    # 途中で切れたPNGをWordPressへ送ると、サムネイル生成でPHP致命的エラーになり
+    # 「500 internal_server_error: このサイトで重大なエラーが発生しました」が返る
+    # （実際に発生した。ヘッダだけ正しい786,444バイトの破損PNGが原因）。
+    try:
+        with Image.open(image_path) as im:
+            im.load()
+    except Exception as exc:
+        return make("NG", "要画像確認", "アイキャッチ画像のデータが壊れています",
+                    f"[NG] {no3} {image_path} broken image data ({exc})")
+
     if (fmt or "").upper() != "PNG":
         return make("WARN", "要画像確認", "アイキャッチ画像がPNG形式ではありません",
                     f"[WARN] {no3} {image_path} is not PNG ({fmt}, {width}x{height})")
