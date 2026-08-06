@@ -29,6 +29,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import markdown
 import pandas as pd
@@ -888,6 +889,10 @@ BLOCK_RETRY_WAIT_SEC = float(os.environ.get("WP_BLOCK_RETRY_WAIT_SEC", "600").st
 # 遮断以外の失敗（記事生成のエラー、画像の不備等）では作らないため、再実行の対象を絞れる。
 BLOCK_MARKER_PATH = os.environ.get("WP_BLOCKED_MARKER", "").strip() or ".wp_blocked"
 
+# 再開予定時刻の表示用。GitHub Actions のランナーはUTCで動くため、
+# ログにはJSTを出す（cronの枠も台帳もJSTで運用しているため）。
+JST = ZoneInfo("Asia/Tokyo")
+
 # 実行内で遮断を検知したかどうか（理由文字列。空なら未遮断）。
 # 一度遮断されると以降のリクエストも同じように弾かれるため、無駄打ちを避ける。
 _blocked_reason = ""
@@ -983,17 +988,25 @@ class WordPressClient:
             reason = detect_block(response)
             if not reason:
                 if attempt > 0:
-                    print(f"  遮断が解除されました（{attempt}回目の再試行で成功）")
+                    print(f"  遮断が解除されました（{attempt}回目の再試行で成功）", flush=True)
                 return response
 
             # 待てば通ることがあるため、回数が残っていれば間を空けて試し直す。
             # 連打はボット判定を強めるので、待ち時間は回を追うごとに伸ばす。
+            #
+            # ここからの print は必ず flush する。GitHub Actions では標準出力が
+            # ブロックバッファリングになり、既定ではプロセス終了までログに出ない。
+            # 「何も出ないまま10分止まる」状態になると、遮断で待っているのか
+            # 通信がハングしているのか実行中に判別できなくなるため。
             if attempt < BLOCK_RETRY_COUNT:
                 sleep_sec = BLOCK_RETRY_WAIT_SEC * (attempt + 1)
+                resume_at = dt.datetime.now(JST) + dt.timedelta(seconds=sleep_sec)
                 print(
                     f"::warning title=WordPress blocked::{reason} "
                     f"{sleep_sec / 60:.0f}分待って再試行します"
-                    f"（{attempt + 1}/{BLOCK_RETRY_COUNT}回目）"
+                    f"（{attempt + 1}/{BLOCK_RETRY_COUNT}回目 / "
+                    f"{resume_at.strftime('%H:%M')} JST 再開予定）",
+                    flush=True,
                 )
                 time.sleep(sleep_sec)
                 continue
@@ -1003,7 +1016,8 @@ class WordPressClient:
             print(
                 f"::error title=WordPress blocked::{reason} "
                 f"{BLOCK_RETRY_COUNT}回再試行しても解除されなかったため、"
-                "以降のリクエストは送信しません"
+                "以降のリクエストは送信しません",
+                flush=True,
             )
             raise WordPressBlockedError(reason)
 
