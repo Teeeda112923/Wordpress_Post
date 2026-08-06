@@ -85,7 +85,11 @@ jobs:
       )) ||
       (github.event_name == 'workflow_dispatch' && inputs.stage == 'post')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 遮断時の再試行（既定 10分 → 20分）で最大30分待つため、30分では待ち時間だけで
+    # 使い切ってしまう。タイムアウトが先に来ると .wp_blocked が書かれる前にジョブが死に、
+    # いちばん再実行が必要な場面で遮断時の再実行が起動しない。
+    # checkout・依存インストール・投稿処理の分を上乗せして60分にする。
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
