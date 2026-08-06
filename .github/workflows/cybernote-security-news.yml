@@ -59,6 +59,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Pythonの標準出力は端末以外だとブロックバッファリングになり、既定では
+  # プロセスが終わるまでログに何も出ない。遮断で10分・20分待つ間が無言になり、
+  # 待っているのか通信がハングしているのか実行中に判別できなかったため、
+  # 実行中のログをそのまま流す。
+  PYTHONUNBUFFERED: "1"
   LEDGER: projects/cybernote-security-news/data/news_ledger.csv
   ARTICLES_DIR: projects/cybernote-security-news/articles
   IMAGES_DIR: projects/cybernote-security-news/eyecatches
