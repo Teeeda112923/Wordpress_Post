@@ -164,12 +164,10 @@ def select_row(
 
         post_status = normalized(value(row, "投稿ステータス", "post_status"))
         # draft段階では、既に下書き作成済み・公開済みの行を再処理しない。
-        # publish段階では、下書き作成済みの行だけを公開対象にする。
+        # （2段階運用をやめたため publish段階は無くなったが、下書き済みの行が
+        #   台帳に残っていても再投稿しないよう is_draft の判定は残す）
         if stage == "draft":
             if is_draft(post_status) or is_published(post_status):
-                continue
-        elif stage == "publish":
-            if not is_draft(post_status):
                 continue
 
         candidates.append(row)
@@ -190,7 +188,8 @@ def main() -> int:
     parser.add_argument("--articles-dir", required=True)
     parser.add_argument("--eyecatches-dir", required=True)
     parser.add_argument("--date", default="")
-    parser.add_argument("--stage", choices=["draft", "publish"], required=True)
+    # draft は「まだ投稿していない行を選ぶ」の意味（下書き投稿という意味ではない）
+    parser.add_argument("--stage", choices=["draft"], required=True)
     parser.add_argument("--no", default="")
     args = parser.parse_args()
 

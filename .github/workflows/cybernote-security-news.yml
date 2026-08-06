@@ -4,7 +4,9 @@ name: CyberNote Security News
 # 下書きを人手で確認する運用になっていなかったため、公開段階（投稿の検索＋
 # ステータス変更で1記事あたり2〜3リクエスト）は実質ただの余分なアクセスだった。
 # WordPress側のボット対策に送るリクエストを減らすことを優先する。
-# 既存の下書きを公開したいときは stage=publish を手動実行する。
+# 2段階運用の名残だった publish ジョブ（既存の下書きを公開する stage=publish）は、
+# 起動する cron を削除した時点で手動実行の経路しか残っておらず、実際に使われて
+# いなかったため削除した。下書きを公開したいときは WordPress 管理画面から行う。
 # 定期実行は1日8枠。記事の生成目安は1日5件で、残る3枠は同じ日に多く生成された
 # ときの予備。1枠につき1記事だけ投稿し、2時間間隔で分散させる。
 # 1回の実行でまとめて投稿する形にはしない（短時間に集中させると
@@ -33,14 +35,6 @@ on:
     - cron: "30 13 * * *"
   workflow_dispatch:
     inputs:
-      stage:
-        description: "実行段階（post=記事を公開まで行う / publish=既存の下書きを公開する）"
-        type: choice
-        required: true
-        default: "post"
-        options:
-          - post
-          - publish
       target_date:
         description: "対象日（YYYY-MM-DD、空欄なら日本時間の当日）"
         type: string
@@ -83,9 +77,13 @@ jobs:
         github.event.schedule == '30 11 * * *' ||
         github.event.schedule == '30 13 * * *'
       )) ||
-      (github.event_name == 'workflow_dispatch' && inputs.stage == 'post')
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 遮断時の再試行（既定 10分 → 20分）で最大30分待つため、30分では待ち時間だけで
+    # 使い切ってしまう。タイムアウトが先に来ると .wp_blocked が書かれる前にジョブが死に、
+    # いちばん再実行が必要な場面で遮断時の再実行が起動しない。
+    # checkout・依存インストール・投稿処理の分を上乗せして60分にする。
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
@@ -307,7 +305,6 @@ jobs:
           MAX_RERUN: ${{ vars.BLOCK_RERUN_MAX || '3' }}
           ATTEMPT: ${{ inputs.retry_attempt }}
           # スケジュール実行から落ちた場合 inputs は空になるため既定値で補う
-          STAGE: ${{ inputs.stage }}
           DRY_RUN: ${{ inputs.dry_run }}
           TARGET_DATE: ${{ steps.select.outputs.target_date }}
         run: |
@@ -324,192 +321,6 @@ jobs:
           echo "遮断のため ${next} 回目の再実行を予約します"
           gh workflow run cybernote-security-news.yml \
             --ref "${{ github.ref_name }}" \
-            -f stage="${STAGE:-post}" \
             -f target_date="$TARGET_DATE" \
             -f dry_run="${DRY_RUN:-false}" \
             -f retry_attempt="$next"
-
-  publish:
-    if: >-
-      (github.event_name == 'schedule' && (
-        github.event.schedule == '0 0 * * *' ||
-        github.event.schedule == '20 3 * * *' ||
-        github.event.schedule == '0 6 * * *'
-      )) ||
-      (github.event_name == 'workflow_dispatch' && inputs.stage == 'publish')
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: "pip"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Select today's news
-        id: select
-        env:
-          INPUT_TARGET_DATE: ${{ inputs.target_date }}
-        run: |
-          TARGET_DATE="$INPUT_TARGET_DATE"
-          if [ -z "$TARGET_DATE" ]; then
-            TARGET_DATE="$(TZ=Asia/Tokyo date +%F)"
-          fi
-
-          NEWS_NO="$(python projects/cybernote-security-news/src/select_news.py \
-            --ledger "$LEDGER" \
-            --repo-root . \
-            --articles-dir "$ARTICLES_DIR" \
-            --eyecatches-dir "$IMAGES_DIR" \
-            --date "$TARGET_DATE" \
-            --stage publish)"
-
-          echo "target_date=$TARGET_DATE"
-          echo "selected_no=$NEWS_NO" >> "$GITHUB_OUTPUT"
-
-          if [ -z "$NEWS_NO" ]; then
-            echo "公開対象がありません。公開処理を行いません。"
-          else
-            echo "公開するNo: $NEWS_NO"
-          fi
-
-      - name: Publish reviewed draft
-        if: steps.select.outputs.selected_no != ''
-        env:
-          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
-          WP_USERNAME: ${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-          # ボット対策に弾かれる場合はリポジトリ変数 WP_USER_AGENT で上書きする
-          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
-          INPUT_TARGET_DATE: ${{ inputs.target_date }}
-          INPUT_DRY_RUN: ${{ inputs.dry_run }}
-        run: |
-          DRY_RUN_FLAG=""
-          if [ "$INPUT_DRY_RUN" = "true" ]; then
-            DRY_RUN_FLAG="--dry-run"
-          fi
-
-          python projects/cybernote-security-news/src/publish_news.py \
-            --ledger "$LEDGER" \
-            --repo-root . \
-            --articles-dir "$ARTICLES_DIR" \
-            --eyecatches-dir "$IMAGES_DIR" \
-            --results-dir "$RESULTS_DIR" \
-            --date "$INPUT_TARGET_DATE" \
-            --no "${{ steps.select.outputs.selected_no }}" \
-            $DRY_RUN_FLAG
-
-      - name: Fail on publish errors
-        if: steps.select.outputs.selected_no != ''
-        env:
-          TARGET_NO: ${{ steps.select.outputs.selected_no }}
-        run: |
-          python - <<'PY'
-          import csv
-          import os
-          import sys
-          from pathlib import Path
-
-          selected = os.environ["TARGET_NO"].strip()
-          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("publish_*.csv"))
-          if not files:
-              print("公開結果CSVが見つかりません。", file=sys.stderr)
-              sys.exit(1)
-
-          with files[-1].open(encoding="utf-8-sig", newline="") as handle:
-              rows = list(csv.DictReader(handle))
-          matches = [row for row in rows if str(row.get("No", "")).strip() == selected]
-          if not matches:
-              print(f"No.{selected} の公開結果が見つかりません。", file=sys.stderr)
-              sys.exit(1)
-
-          row = matches[-1]
-          status = (row.get("status") or "").strip().lower()
-          if status not in {"published", "already_published", "dry-run"}:
-              print(f"[ERROR] No.{selected}: {row.get('message')}", file=sys.stderr)
-              sys.exit(1)
-          print(f"WordPress公開処理: {status}")
-          PY
-
-      - name: Update ledger after publish
-        if: steps.select.outputs.selected_no != ''
-        env:
-          TARGET_NO: ${{ steps.select.outputs.selected_no }}
-        run: |
-          python - <<'PY'
-          import csv
-          import os
-          import sys
-          from pathlib import Path
-
-          selected = os.environ["TARGET_NO"].strip()
-          result_files = sorted(Path(os.environ["RESULTS_DIR"]).glob("publish_*.csv"))
-          with result_files[-1].open(encoding="utf-8-sig", newline="") as handle:
-              result_rows = list(csv.DictReader(handle))
-          matches = [row for row in result_rows if str(row.get("No", "")).strip() == selected]
-          if not matches:
-              print(f"No.{selected} の公開結果が見つかりません。", file=sys.stderr)
-              sys.exit(1)
-          result = matches[-1]
-          status = (result.get("status") or "").strip().lower()
-          if status == "dry-run":
-              print("dry-runのため管理簿は更新しません。")
-              sys.exit(0)
-          if status not in {"published", "already_published"}:
-              print(f"管理簿更新対象外のステータスです: {status}", file=sys.stderr)
-              sys.exit(1)
-
-          ledger_path = Path(os.environ["LEDGER"])
-          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
-              reader = csv.DictReader(handle)
-              fieldnames = reader.fieldnames or []
-              ledger_rows = list(reader)
-
-          changed = False
-          for row in ledger_rows:
-              if str(row.get("No", "")).strip() == selected:
-                  row["投稿ステータス"] = "公開済み"
-                  row["WP投稿ID"] = result.get("post_id", "")
-                  row["WP投稿URL"] = result.get("post_link", "")
-                  row["最終更新日時"] = result.get("published_at_jst", "")
-                  row["エラー内容"] = ""
-                  changed = True
-                  break
-          if not changed:
-              print(f"管理簿にNo.{selected}が見つかりません。", file=sys.stderr)
-              sys.exit(1)
-
-          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
-              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
-              writer.writeheader()
-              writer.writerows(ledger_rows)
-          print(f"管理簿を公開済みに更新しました: No.{selected}")
-          PY
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$LEDGER"
-          if git diff --cached --quiet; then
-            echo "管理簿変更なし"
-          else
-            git commit -m "Update CyberNote publish status"
-            git push
-          fi
-
-      - name: Upload results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: cybernote-security-news-publish-results
-          path: |
-            ${{ env.RESULTS_DIR }}/*.csv
-          if-no-files-found: warn
-          retention-days: 30
