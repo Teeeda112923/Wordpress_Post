@@ -51,6 +51,11 @@ on:
         type: boolean
         required: true
         default: false
+      retry_attempt:
+        description: "（自動）Imunify360の遮断で落ちた後の再実行回数。手動実行では触らない"
+        type: string
+        required: false
+        default: "0"
 
 permissions:
   contents: write
@@ -97,6 +102,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Imunify360 の遮断は数時間続くことがある。wp_auto_post.py 側の再試行
+      # （既定10分→20分）で足りなかった分を、実行し直しの前に待って埋める。
+      # 通常の実行（retry_attempt が空か 0）では待たない。
+      - name: Wait before retry
+        if: ${{ inputs.retry_attempt != '' && inputs.retry_attempt != '0' }}
+        env:
+          WAIT_MIN: ${{ vars.BLOCK_RERUN_WAIT_MIN || '60' }}
+        run: |
+          echo "遮断による再実行（${{ inputs.retry_attempt }}回目）のため ${WAIT_MIN} 分待ちます"
+          sleep $(( WAIT_MIN * 60 ))
+
       - name: Select today's news
         id: select
         env:
@@ -116,6 +132,8 @@ jobs:
             --stage draft)"   # select_news の draft = 未投稿の行を選ぶ、の意味
 
           echo "target_date=$TARGET_DATE"
+          # 遮断で再実行するときは同じ日付を対象にする（日付をまたいでも枠を取りこぼさない）
+          echo "target_date=$TARGET_DATE" >> "$GITHUB_OUTPUT"
           echo "selected_no=$NEWS_NO" >> "$GITHUB_OUTPUT"
 
           if [ -z "$NEWS_NO" ]; then
@@ -275,6 +293,41 @@ jobs:
             ${{ env.RESULTS_DIR }}/*.csv
           if-no-files-found: warn
           retention-days: 30
+
+      # Imunify360 の遮断で落ちた場合だけ、時間をおいて自分を実行し直す。
+      # 遮断以外の失敗（記事生成のエラー、画像の不備等）では .wp_blocked が
+      # 作られないので再実行しない。1回の実行で投稿するのは従来どおり1記事だけで、
+      # まとめ投稿にはしない（短時間に集中させると遮断されるため）。
+      # GITHUB_TOKEN では workflow_dispatch から新しい実行が起きない仕様のため、
+      # シークレット ACTIONS_PAT（Actions: Read and write のPAT）を使う。
+      - name: Re-run later if blocked
+        if: ${{ failure() && hashFiles('.wp_blocked') != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.ACTIONS_PAT }}
+          MAX_RERUN: ${{ vars.BLOCK_RERUN_MAX || '3' }}
+          ATTEMPT: ${{ inputs.retry_attempt }}
+          # スケジュール実行から落ちた場合 inputs は空になるため既定値で補う
+          STAGE: ${{ inputs.stage }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          TARGET_DATE: ${{ steps.select.outputs.target_date }}
+        run: |
+          attempt="${ATTEMPT:-0}"
+          next=$(( attempt + 1 ))
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning title=再実行できません::遮断で失敗しましたが、シークレット ACTIONS_PAT が未設定のため自動で実行し直せません。手動で再実行してください"
+            exit 0
+          fi
+          if [ "$next" -gt "$MAX_RERUN" ]; then
+            echo "::warning title=再実行を打ち切ります::${MAX_RERUN}回試しても遮断が解除されませんでした"
+            exit 0
+          fi
+          echo "遮断のため ${next} 回目の再実行を予約します"
+          gh workflow run cybernote-security-news.yml \
+            --ref "${{ github.ref_name }}" \
+            -f stage="${STAGE:-post}" \
+            -f target_date="$TARGET_DATE" \
+            -f dry_run="${DRY_RUN:-false}" \
+            -f retry_attempt="$next"
 
   publish:
     if: >-

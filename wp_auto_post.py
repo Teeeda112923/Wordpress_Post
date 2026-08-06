@@ -874,13 +874,62 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
+# 遮断されたときに待ってから試し直す回数と、待ち時間（秒）。
+# 遮断は断続的で、しばらく待つと通ることがある（実測: 14:11 JST に遮断され 18:19 JST に成功。
+# 35分後の再試行で通ったケースもある）。ただし待っている間も GitHub Actions の実行時間を
+# 消費するため、既定は控えめにする。待ち時間は回を追うごとに伸ばす（既定: 10分 → 20分）。
+# すぐ叩き直すことはしない。それはボット判定を強めるだけのため。
+# これでも通らない場合は、時間をおいてワークフローを再実行すること（.wp_blocked を参照）。
+BLOCK_RETRY_COUNT = int(os.environ.get("WP_BLOCK_RETRY_COUNT", "2").strip() or "2")
+BLOCK_RETRY_WAIT_SEC = float(os.environ.get("WP_BLOCK_RETRY_WAIT_SEC", "600").strip() or "600")
+
+# 再試行を使い切って打ち切ったときに作る目印ファイル。
+# ワークフロー側はこれを見て「遮断で落ちた」と判断し、時間をおいて実行し直す。
+# 遮断以外の失敗（記事生成のエラー、画像の不備等）では作らないため、再実行の対象を絞れる。
+BLOCK_MARKER_PATH = os.environ.get("WP_BLOCKED_MARKER", "").strip() or ".wp_blocked"
+
+# 実行内で遮断を検知したかどうか（理由文字列。空なら未遮断）。
+# 一度遮断されると以降のリクエストも同じように弾かれるため、無駄打ちを避ける。
+_blocked_reason = ""
+
+# --dry-run 実行かどうか。dry-run では WordPress を変更しないのと同様、
+# ワークフローの再実行を促す目印ファイルも作らない。
+_dry_run = False
+
 
 class WordPressBlockedError(RuntimeError):
     """サーバー側（Imunify360 等）にリクエストを遮断された状態。
 
-    この例外が出た時点で以降のリクエストも通らないため、
-    呼び出し側はリトライせず、その実行を打ち切ること。
+    間を空けた再試行（BLOCK_RETRY_COUNT 回）を使い切ってもなお遮断されている
+    ときにだけ送出される。この時点で以降のリクエストも通らないため、
+    呼び出し側はさらにリトライせず、その実行を打ち切ること。
     """
+
+
+def set_dry_run(value: bool) -> None:
+    """dry-run 実行であることを記録する（遮断の目印ファイルを作らないため）。"""
+    global _dry_run
+    _dry_run = bool(value)
+
+
+def is_blocked() -> bool:
+    """この実行内で既に遮断を検知しているか。"""
+    return bool(_blocked_reason)
+
+
+def blocked_reason() -> str:
+    return _blocked_reason
+
+
+def write_block_marker(reason: str) -> None:
+    """遮断で打ち切ったことをファイルに残す（ワークフローの再実行判定に使う）。"""
+    if _dry_run:
+        print("  dry-run のため遮断の目印ファイルは作成しません")
+        return
+    try:
+        Path(BLOCK_MARKER_PATH).write_text(reason, encoding="utf-8")
+    except Exception as exc:
+        print(f"  [警告] 遮断の目印ファイルを作成できませんでした: {exc}")
 
 
 class WordPressClient:
@@ -912,6 +961,55 @@ class WordPressClient:
 
         self._term_cache: dict[tuple[str, str], int] = {}
 
+    def send(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """WordPress への HTTP リクエストを1本にまとめた入口。
+
+        - 既に遮断されていれば送信せず WordPressBlockedError を投げる（無駄打ちの防止）
+        - 遮断されたら BLOCK_RETRY_COUNT 回まで、間を空けて試し直す
+          （待ち時間は回を追うごとに伸ばす。既定は 10分 → 20分）
+        - それでも通らなければ目印ファイルを残し、以降のリクエストを一切送らない
+
+        遮断はステータスコードの前に判定する。Imunify360 は HTTP 200 のまま
+        HTMLのチャレンジページやJSONの拒否メッセージを返すことがあるため。
+        """
+        global _blocked_reason
+
+        if _blocked_reason:
+            raise WordPressBlockedError(_blocked_reason)
+
+        for attempt in range(BLOCK_RETRY_COUNT + 1):
+            response = self.session.request(method, url, **kwargs)
+
+            reason = detect_block(response)
+            if not reason:
+                if attempt > 0:
+                    print(f"  遮断が解除されました（{attempt}回目の再試行で成功）")
+                return response
+
+            # 待てば通ることがあるため、回数が残っていれば間を空けて試し直す。
+            # 連打はボット判定を強めるので、待ち時間は回を追うごとに伸ばす。
+            if attempt < BLOCK_RETRY_COUNT:
+                sleep_sec = BLOCK_RETRY_WAIT_SEC * (attempt + 1)
+                print(
+                    f"::warning title=WordPress blocked::{reason} "
+                    f"{sleep_sec / 60:.0f}分待って再試行します"
+                    f"（{attempt + 1}/{BLOCK_RETRY_COUNT}回目）"
+                )
+                time.sleep(sleep_sec)
+                continue
+
+            _blocked_reason = reason
+            write_block_marker(reason)
+            print(
+                f"::error title=WordPress blocked::{reason} "
+                f"{BLOCK_RETRY_COUNT}回再試行しても解除されなかったため、"
+                "以降のリクエストは送信しません"
+            )
+            raise WordPressBlockedError(reason)
+
+        # BLOCK_RETRY_COUNT を負値にされた場合の保険（通常は到達しない）
+        raise WordPressBlockedError(_blocked_reason or "サーバー側にリクエストを遮断されました")
+
     def request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
         url = f"{self.api_base}/{endpoint.lstrip('/')}"
         kwargs.setdefault("timeout", 90)
@@ -924,13 +1022,7 @@ class WordPressClient:
                 params = {}
             params.setdefault("_nocache", str(int(time.time() * 1000)))
             kwargs["params"] = params
-        response = self.session.request(method, url, **kwargs)
-
-        # 遮断はステータスコードの前に判定する。Imunify360 は HTTP 200 のまま
-        # HTMLのチャレンジページやJSONの拒否メッセージを返すことがあるため。
-        blocked = detect_block(response)
-        if blocked:
-            raise WordPressBlockedError(blocked)
+        response = self.send(method, url, **kwargs)
 
         if response.status_code >= 400:
             raise RuntimeError(f"WordPress API エラー {extract_api_error(response)}")
@@ -999,14 +1091,11 @@ class WordPressClient:
         if parent:
             body["parent"] = parent
         url = f"{self.api_base}/{endpoint}"
-        resp = self.session.request("POST", url, json=body, timeout=90)
-        # 遮断はステータスコードの前に判定する。request() と同じ detect_block() を
-        # 使い、JSONの拒否メッセージだけでなくHTMLのチャレンジページも拾う。
-        # ここで RuntimeError を投げていたため、遮断でも WordPressBlockedError に
-        # ならず、台帳ループの打ち切りが働いていなかった。
-        blocked = detect_block(resp)
-        if blocked:
-            raise WordPressBlockedError(blocked)
+        # 応答の解釈だけこの関数で行い、送信と遮断の判定は send() に任せる。
+        # 以前はここで session.request() を直に呼び RuntimeError を投げていたため、
+        # 遮断でも WordPressBlockedError にならず、台帳ループの打ち切りや
+        # 遮断時の再試行が働いていなかった。
+        resp = self.send("POST", url, json=body, timeout=90)
 
         err: dict[str, Any] = {}
         try:
@@ -1228,10 +1317,15 @@ class WordPressClient:
             "Content-Disposition": f'attachment; filename="{image_path.name}"',
             "Content-Type": mime_type,
         }
-        with image_path.open("rb") as f:
-            response = self.session.post(
-                f"{self.api_base}/media", headers=headers, data=f, timeout=300
-            )
+        # 遮断されたときの再試行で同じ本文を送り直せるよう、ファイルオブジェクトでは
+        # なくバイト列を渡す（読み終わった後のファイルを再送すると中身が空になる）。
+        response = self.send(
+            "POST",
+            f"{self.api_base}/media",
+            headers=headers,
+            data=image_path.read_bytes(),
+            timeout=300,
+        )
         if response.status_code >= 400:
             raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
         media = response.json()
@@ -1634,6 +1728,9 @@ def run_media_cleanup(
 
 def main() -> int:
     args = parse_args()
+    # dry-run では WordPress を変更しないのと同様、遮断の目印ファイルも作らない
+    # （ワークフローの再実行は実投稿が遮断されたときだけ行う）。
+    set_dry_run(args.dry_run)
     limit = None if args.limit is None or args.limit <= 0 else args.limit
 
     input_path = Path(args.input)
