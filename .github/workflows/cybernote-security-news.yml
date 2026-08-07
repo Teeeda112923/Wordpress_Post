@@ -113,8 +113,20 @@ jobs:
         env:
           WAIT_MIN: ${{ vars.BLOCK_RERUN_WAIT_MIN || '60' }}
         run: |
-          echo "遮断による再実行（${{ inputs.retry_attempt }}回目）のため ${WAIT_MIN} 分待ちます"
-          sleep $(( WAIT_MIN * 60 ))
+          # 1時間まるごと無言で待つと「止まっている」ようにしか見えず、実際に
+          # 待機完了の直前で手動キャンセルされた。10分ごとに残り時間を出す。
+          RESUME="$(TZ=Asia/Tokyo date -d "+${WAIT_MIN} minutes" '+%H:%M')"
+          echo "遮断による再実行（${{ inputs.retry_attempt }}回目）のため ${WAIT_MIN} 分待ちます（${RESUME} JST 再開予定）"
+          remaining="$WAIT_MIN"
+          while [ "$remaining" -gt 10 ]; do
+            sleep 600
+            remaining=$(( remaining - 10 ))
+            echo "  待機中… 残り ${remaining} 分（${RESUME} JST 再開予定）"
+          done
+          if [ "$remaining" -gt 0 ]; then
+            sleep $(( remaining * 60 ))
+          fi
+          echo "待機終了。投稿処理を始めます"
 
       - name: Select today's news
         id: select

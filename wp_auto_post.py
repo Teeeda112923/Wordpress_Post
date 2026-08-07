@@ -896,6 +896,14 @@ DEFAULT_USER_AGENT = (
 BLOCK_RETRY_COUNT = int(os.environ.get("WP_BLOCK_RETRY_COUNT", "2").strip() or "2")
 BLOCK_RETRY_WAIT_SEC = float(os.environ.get("WP_BLOCK_RETRY_WAIT_SEC", "600").strip() or "600")
 
+# WordPress が 5xx を返したときに待ってから試し直す回数と、待ち時間（秒）。
+# 遮断とは別で、サーバー側の一時的な不調（PHP致命的エラー等）を想定する。
+# 実測: メディアアップロードが 500 internal_server_error で失敗した枠があり、
+# 同じ記事・同じ画像が後の枠では問題なく投稿できた。
+# 遮断ほど長くは待たない（数時間続くものではないため）。既定は 1分 → 2分。
+SERVER_ERROR_RETRY_COUNT = int(os.environ.get("WP_SERVER_ERROR_RETRY_COUNT", "2").strip() or "2")
+SERVER_ERROR_WAIT_SEC = float(os.environ.get("WP_SERVER_ERROR_WAIT_SEC", "60").strip() or "60")
+
 # 再試行を使い切って打ち切ったときに作る目印ファイル。
 # ワークフロー側はこれを見て「遮断で落ちた」と判断し、時間をおいて実行し直す。
 # 遮断以外の失敗（記事生成のエラー、画像の不備等）では作らないため、再実行の対象を絞れる。
@@ -966,9 +974,12 @@ class WordPressClient:
 
         retry = Retry(
             # 自動投稿では、遮断後の連続再試行がBot判定を強めるため最小限にする。
+            # HTTPステータスによる再試行はここでは行わない（間を空けずに叩き直す
+            # ことになり、ボット判定を強めるだけのため）。429/5xx は send() 側で
+            # 遮断の判定と 5xx の再試行として、間を空けて扱う。
             total=1,
             backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
+            status_forcelist=[],
             allowed_methods=["GET", "POST"],
             raise_on_status=False,
         )
@@ -977,6 +988,33 @@ class WordPressClient:
         self.session.mount("http://", adapter)
 
         self._term_cache: dict[tuple[str, str], int] = {}
+
+    def _send_once(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """1回分の送信。5xx（サーバー側の一時的な不調）だけ間を空けて試し直す。
+
+        遮断とは別物として扱う。遮断は数時間続くことがあるので長く待つが、
+        5xx はサーバーが一時的に落ちているだけのことが多く、数分で復帰する。
+        実測: メディアアップロードが 500 で失敗した枠があり、同じ記事・同じ画像が
+        後の枠では問題なく投稿できた。遮断の可能性がある応答はここでは扱わず、
+        呼び出し元（send）の遮断判定に任せる。
+        """
+        response = self.session.request(method, url, **kwargs)
+        for attempt in range(SERVER_ERROR_RETRY_COUNT):
+            if response.status_code < 500 or detect_block(response):
+                return response
+            sleep_sec = SERVER_ERROR_WAIT_SEC * (attempt + 1)
+            print(
+                f"::warning title=WordPress server error::"
+                f"WordPressが HTTP {response.status_code} を返しました。"
+                f"{sleep_sec / 60:.0f}分待って再試行します"
+                f"（{attempt + 1}/{SERVER_ERROR_RETRY_COUNT}回目）",
+                flush=True,
+            )
+            time.sleep(sleep_sec)
+            response = self.session.request(method, url, **kwargs)
+            if response.status_code < 500:
+                print(f"  サーバーエラーが解消しました（{attempt + 1}回目の再試行で成功）", flush=True)
+        return response
 
     def send(self, method: str, url: str, **kwargs: Any) -> requests.Response:
         """WordPress への HTTP リクエストを1本にまとめた入口。
@@ -995,7 +1033,7 @@ class WordPressClient:
             raise WordPressBlockedError(_blocked_reason)
 
         for attempt in range(BLOCK_RETRY_COUNT + 1):
-            response = self.session.request(method, url, **kwargs)
+            response = self._send_once(method, url, **kwargs)
 
             reason = detect_block(response)
             if not reason:
