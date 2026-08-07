@@ -108,6 +108,33 @@ def resolve_path(repo_root: Path, raw_path: str, fallback_dir: Path, filename: s
     return None
 
 
+def quality_errors(repo_root: Path, article_path: Path) -> list[str]:
+    """記事品質チェックでエラーになる項目を返す（判定できなければ空リスト）。
+
+    投稿を止めるほどの不備がある記事を選んでしまうと、その枠は必ず失敗して
+    1件も投稿されない。同じ日に問題のない記事があるなら、そちらを選ぶ。
+    チェッカーを呼べない場合は選択を止めず、従来どおり後段の品質ゲートに任せる。
+    """
+    try:
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        import geo_article_quality_check as checker
+    except Exception as exc:  # チェッカーが無い・読めない
+        print(f"品質チェックを省略します（{exc}）", file=sys.stderr)
+        return []
+    try:
+        front, body, front_errors = checker.split_front_matter(
+            article_path.read_text(encoding="utf-8")
+        )
+        if front_errors:
+            return front_errors
+        errors, _ = checker.geo_errors(front, body)
+        return errors
+    except Exception as exc:
+        print(f"品質チェックに失敗しました（{article_path}: {exc}）", file=sys.stderr)
+        return []
+
+
 def select_row(
     rows: list[dict[str, str]],
     target_date: str,
@@ -116,8 +143,9 @@ def select_row(
     articles_dir: Path,
     eyecatches_dir: Path,
     forced_no: str = "",
+    skip_quality_error: bool = False,
 ) -> dict[str, str] | None:
-    candidates: list[dict[str, str]] = []
+    candidates: list[tuple[dict[str, str], Path]] = []
 
     for row in rows:
         row_no = value(row, "No", "番号", "記事No", "ID")
@@ -170,15 +198,30 @@ def select_row(
             if is_draft(post_status) or is_published(post_status):
                 continue
 
-        candidates.append(row)
+        candidates.append((row, article_path))
 
     candidates.sort(
         key=lambda item: (
-            -numeric_score(value(item, "話題性スコア", "topic_score")),
-            no_key(value(item, "No", "番号", "記事No", "ID")),
+            -numeric_score(value(item[0], "話題性スコア", "topic_score")),
+            no_key(value(item[0], "No", "番号", "記事No", "ID")),
         )
     )
-    return candidates[0] if candidates else None
+    if not skip_quality_error:
+        return candidates[0][0] if candidates else None
+
+    # 話題性スコアの高い順に見て、品質チェックを通る最初の記事を選ぶ。
+    # スコア1位の記事に不備があるだけで、その枠が丸ごと落ちるのを避ける。
+    for row, article_path in candidates:
+        issues = quality_errors(repo_root, article_path)
+        if not issues:
+            return row
+        row_no = value(row, "No", "番号", "記事No", "ID")
+        print(
+            f"品質チェックでエラーのためスキップ: No.{row_no}"
+            f"（{len(issues)}件）{' / '.join(issues[:3])}",
+            file=sys.stderr,
+        )
+    return None
 
 
 def main() -> int:
@@ -191,6 +234,11 @@ def main() -> int:
     # draft は「まだ投稿していない行を選ぶ」の意味（下書き投稿という意味ではない）
     parser.add_argument("--stage", choices=["draft"], required=True)
     parser.add_argument("--no", default="")
+    parser.add_argument(
+        "--skip-quality-error",
+        action="store_true",
+        help="品質チェックでエラーになる記事は選ばず、次点の記事を選ぶ",
+    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
@@ -203,6 +251,7 @@ def main() -> int:
         repo_root / args.articles_dir,
         repo_root / args.eyecatches_dir,
         args.no,
+        args.skip_quality_error,
     )
     if row is None:
         print(
