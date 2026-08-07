@@ -8,11 +8,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
+import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
 
 import geo_meta
+
+# 字数・本数の許容幅。規定の範囲を外れても、この割合までのズレは警告にとどめて
+# 投稿を止めない。生成AIの出力は毎回きっちり範囲へ収まるわけではなく、
+# 数十字のズレで1枠まるごと落とすと投稿そのものが止まってしまうため。
+# 範囲を大きく外れた場合と、節や一次情報がそもそも無い場合は従来どおりエラー。
+# 0 にすれば従来と同じ厳密判定に戻る。
+RANGE_SLACK = float(os.environ.get("GEO_RANGE_SLACK", "0.2").strip() or "0.2")
 
 PRIMARY_DOMAINS = {
     "jvn.jp", "ipa.go.jp", "jpcert.or.jp", "nisc.go.jp", "npa.go.jp",
@@ -243,13 +252,35 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     }
     normalized, warnings = geo_meta.normalize_front_matter(raw, body)
 
+    def check_range(label: str, count: int, low: int, high: int, unit: str = "字") -> None:
+        """規定範囲を外れたときに、ズレの大きさでエラーと警告を振り分ける。"""
+        if low <= count <= high:
+            return
+        message = f"{label}が{low}〜{high}{unit}ではありません（{count}{unit}）"
+        slack_low = math.floor(low * (1 - RANGE_SLACK))
+        slack_high = math.ceil(high * (1 + RANGE_SLACK))
+        if slack_low <= count <= slack_high:
+            warnings.append(f"{message} ※許容範囲内のため投稿は止めません")
+        else:
+            errors.append(message)
+
+    def check_min(label: str, count: int, low: int, unit: str = "本") -> None:
+        """下限だけの判定。下限を少し下回る程度なら警告にとどめる。"""
+        if count >= low:
+            return
+        message = f"{label}が{low}{unit}未満です（{count}{unit}）"
+        if count >= math.floor(low * (1 - RANGE_SLACK)):
+            warnings.append(f"{message} ※許容範囲内のため投稿は止めません")
+        else:
+            errors.append(message)
+
     answer = normalized.get("answer", "")
     if not answer:
         errors.append("フロントマターanswerがありません")
     elif not answer.endswith("。"):
         errors.append("answerが「。」で終わっていません")
-    elif not 40 <= chars(answer) <= 60:
-        errors.append(f"answerが40〜60字ではありません（{chars(answer)}字）")
+    else:
+        check_range("answer", chars(answer), 40, 60)
 
     if re.search(r"(?m)^cve:", front) is None:
         errors.append("フロントマターcveがありません")
@@ -260,8 +291,8 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     for question, answer_text in front_faq:
         if not question or not answer_text:
             errors.append("フロントマターfaqのq/aが未入力です")
-        if answer_text and not 60 <= chars(answer_text) <= 140:
-            errors.append(f"フロントマターFAQ回答が目安範囲外です（{chars(answer_text)}字）")
+        if answer_text:
+            check_range("フロントマターFAQ回答", chars(answer_text), 60, 140)
 
     sources = [
         (r.get("title", ""), r.get("url", ""), r.get("publisher", ""))
@@ -272,9 +303,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     if not any(is_primary(url) for _, url, _ in sources):
         errors.append("フロントマターsourcesに一次情報ドメインがありません")
 
-    intro_count = chars(intro_text(body))
-    if not 250 <= intro_count <= 300:
-        errors.append(f"冒頭リードが250〜300字ではありません（{intro_count}字）")
+    check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
     sections = h2_sections(body)
     if not any(title == "FAQ" for title, _ in sections):
@@ -291,9 +320,8 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     summary = summary_text(body)
     if not summary:
         errors.append("最後の## まとめがありません")
-    elif not 250 <= chars(summary) <= 300:
-        errors.append(f"## まとめが250〜300字ではありません（{chars(summary)}字）")
     else:
+        check_range("## まとめ", chars(summary), 250, 300)
         if re.search(r"^##\s+", summary, flags=re.M):
             errors.append("## まとめが記事の最後にありません")
         if re.search(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", summary):
@@ -304,8 +332,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
         for url in urls(body)
         if urlparse(url).netloc.lower().endswith("cybernote.click")
     }
-    if len(internal) < 3:
-        errors.append(f"CyberNote内部リンクが3本未満です（{len(internal)}本）")
+    check_min("CyberNote内部リンク", len(internal), 3)
 
     boxes = re.findall(r'<div[^>]*class="[^"]*\bis-style-information-box\b"[^>]*>', body)
     if len(boxes) != 1:
@@ -313,9 +340,9 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
 
     for title, section in sections:
         if re.search(r"^###\s+", section, flags=re.M):
-            direct_count = chars(section_before_h3(section))
-            if not 100 <= direct_count <= 150:
-                errors.append(f"H2『{title}』直下リードが100〜150字ではありません（{direct_count}字）")
+            check_range(
+                f"H2『{title}』直下リード", chars(section_before_h3(section)), 100, 150
+            )
 
     errors.extend(list_table_errors(body))
     return errors, warnings

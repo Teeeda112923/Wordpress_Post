@@ -144,7 +144,8 @@ jobs:
             --articles-dir "$ARTICLES_DIR" \
             --eyecatches-dir "$IMAGES_DIR" \
             --date "$TARGET_DATE" \
-            --stage draft)"   # select_news の draft = 未投稿の行を選ぶ、の意味
+            --stage draft \
+            --skip-quality-error)"   # select_news の draft = 未投稿の行を選ぶ、の意味
 
           echo "target_date=$TARGET_DATE"
           # 遮断で再実行するときは同じ日付を対象にする（日付をまたいでも枠を取りこぼさない）
