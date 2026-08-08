@@ -749,6 +749,39 @@ def detect_block(response: requests.Response) -> str:
     return ""
 
 
+def response_hint(response: requests.Response) -> str:
+    """応答の出どころを1行にまとめる（遮断の切り分け用）。
+
+    CloudflareのようなCDN/WAFが手前に立つと、そこでのブロックも、
+    CDNからオリジンへ届かない場合も、オリジン自身の不調も、すべて
+    「HTMLが返る」同じ形になり、ログからは区別できなかった。
+      - cf-ray がある      -> Cloudflareが返した応答（オリジンまで届いていない）
+      - cf-mitigated がある -> Cloudflareのボット対策が止めた応答
+      - server             -> 応答したソフトウェア（LiteSpeed等ならオリジン）
+      - 本文の先頭         -> ブロックページかエラーページかの判別に使う
+    GitHub Actions の ::warning は1行しか出せないため、空白は潰して返す。
+    """
+    parts: list[str] = []
+    try:
+        headers = response.headers
+    except Exception:
+        headers = {}
+    for key in ("server", "cf-ray", "cf-mitigated", "cf-cache-status", "content-type"):
+        try:
+            value = safe_str(headers.get(key)).strip()
+        except Exception:
+            value = ""
+        if value:
+            parts.append(f"{key}={value}")
+    try:
+        body = re.sub(r"\s+", " ", response.text or "").strip()[:200]
+    except Exception:
+        body = ""
+    if body:
+        parts.append(f"body={body}")
+    return " / ".join(parts) or "(応答の詳細を取得できません)"
+
+
 def extract_api_error(response: requests.Response) -> str:
     """WordPress REST API のエラーJSONから code/message を読みやすく抽出する。"""
     if response.status_code == 415:
@@ -1010,6 +1043,7 @@ class WordPressClient:
                 f"（{attempt + 1}/{SERVER_ERROR_RETRY_COUNT}回目）",
                 flush=True,
             )
+            print(f"  応答の詳細: {response_hint(response)}", flush=True)
             time.sleep(sleep_sec)
             response = self.session.request(method, url, **kwargs)
             if response.status_code < 500:
@@ -1040,6 +1074,11 @@ class WordPressClient:
                 if attempt > 0:
                     print(f"  遮断が解除されました（{attempt}回目の再試行で成功）", flush=True)
                 return response
+
+            # 遮断と判定した応答が、どこから返ってきたものかを残す。
+            # これが無いと Cloudflare のブロックなのか、オリジンの不調なのかを
+            # ログから切り分けられない（実際に切り分けられず調査が止まった）。
+            print(f"  応答の詳細: {response_hint(response)}", flush=True)
 
             # 待てば通ることがあるため、回数が残っていれば間を空けて試し直す。
             # 連打はボット判定を強めるので、待ち時間は回を追うごとに伸ばす。
