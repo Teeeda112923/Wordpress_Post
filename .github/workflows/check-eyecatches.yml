@@ -1,0 +1,45 @@
+name: Check Eyecatches
+
+# 壊れたアイキャッチ画像がコミットされたことを、その場で知らせる。
+#
+# 画像が途中で切れていても Image.open() は形式とサイズを返すため、見た目の
+# ファイル一覧では気づけない。これまでは投稿枠が失敗して初めて分かる状態で、
+# 実際に丸1日以上、毎枠失敗し続けた（スコア1位の記事の画像が壊れていたため、
+# 投稿できる記事があっても順番が回ってこなかった）。
+# 画像を追加・変更したコミットで検査し、壊れていれば赤いバツを出す。
+on:
+  push:
+    paths:
+      - "**/eyecatches/**.png"
+      - "eyecatch_file_check.py"
+      - ".github/workflows/check-eyecatches.yml"
+  pull_request:
+    paths:
+      - "**/eyecatches/**.png"
+      - "eyecatch_file_check.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 検査に必要なのは Pillow だけ。requirements.txt を丸ごと入れると
+      # pandas等の取得で時間がかかり、気づくのが遅れるため最小限にする。
+      - name: Install Pillow
+        run: pip install "Pillow>=10.3.0"
+
+      - name: Check eyecatch images
+        run: python eyecatch_file_check.py
