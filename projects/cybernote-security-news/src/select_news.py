@@ -135,6 +135,28 @@ def quality_errors(repo_root: Path, article_path: Path) -> list[str]:
         return []
 
 
+def image_errors(repo_root: Path, image_path: Path) -> list[str]:
+    """アイキャッチ画像が投稿できない状態かを返す（判定できなければ空リスト）。
+
+    記事本文が整っていても画像が壊れていれば投稿は必ず失敗する。実際、記事だけを
+    見て選んでいたため、画像が壊れた記事が毎枠選ばれ続けて投稿が止まった。
+    判定を1か所に保つため、投稿時と同じ check_eyecatch() を使う。
+    """
+    try:
+        if str(repo_root) not in sys.path:
+            sys.path.insert(0, str(repo_root))
+        from wp_auto_post import check_eyecatch
+    except Exception as exc:
+        print(f"画像チェックを省略します（{exc}）", file=sys.stderr)
+        return []
+    try:
+        result = check_eyecatch(image_path, "", image_path.parent)
+        return [result["error_content"]] if result["level"] == "NG" else []
+    except Exception as exc:
+        print(f"画像チェックに失敗しました（{image_path}: {exc}）", file=sys.stderr)
+        return []
+
+
 def select_row(
     rows: list[dict[str, str]],
     target_date: str,
@@ -145,7 +167,7 @@ def select_row(
     forced_no: str = "",
     skip_quality_error: bool = False,
 ) -> dict[str, str] | None:
-    candidates: list[tuple[dict[str, str], Path]] = []
+    candidates: list[tuple[dict[str, str], Path, Path]] = []
 
     for row in rows:
         row_no = value(row, "No", "番号", "記事No", "ID")
@@ -198,7 +220,7 @@ def select_row(
             if is_draft(post_status) or is_published(post_status):
                 continue
 
-        candidates.append((row, article_path))
+        candidates.append((row, article_path, image_path))
 
     candidates.sort(
         key=lambda item: (
@@ -209,15 +231,16 @@ def select_row(
     if not skip_quality_error:
         return candidates[0][0] if candidates else None
 
-    # 話題性スコアの高い順に見て、品質チェックを通る最初の記事を選ぶ。
-    # スコア1位の記事に不備があるだけで、その枠が丸ごと落ちるのを避ける。
-    for row, article_path in candidates:
+    # 話題性スコアの高い順に見て、記事も画像も問題ない最初の記事を選ぶ。
+    # スコア1位に不備があるだけで、その枠が丸ごと落ちるのを避ける。
+    for row, article_path, image_path in candidates:
         issues = quality_errors(repo_root, article_path)
+        issues += image_errors(repo_root, image_path)
         if not issues:
             return row
         row_no = value(row, "No", "番号", "記事No", "ID")
         print(
-            f"品質チェックでエラーのためスキップ: No.{row_no}"
+            f"投稿できないためスキップ: No.{row_no}"
             f"（{len(issues)}件）{' / '.join(issues[:3])}",
             file=sys.stderr,
         )
