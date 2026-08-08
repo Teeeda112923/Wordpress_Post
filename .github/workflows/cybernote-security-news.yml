@@ -178,6 +178,9 @@ jobs:
           WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
           # ボット対策に弾かれる場合はリポジトリ変数 WP_USER_AGENT で上書きする
           WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          # CDN/WAF（Cloudflare等）を通すための追加ヘッダ。「名前: 値」を改行区切りで
+          # シークレット WP_EXTRA_HEADERS に入れる。未設定なら何も送らない。
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           DRY_RUN_FLAG=""
