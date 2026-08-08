@@ -964,6 +964,27 @@ class WordPressBlockedError(RuntimeError):
     """
 
 
+def extra_headers() -> dict[str, str]:
+    """WP_EXTRA_HEADERS で指定された追加ヘッダを読む（「名前: 値」を改行区切り）。
+
+    CloudflareのようなCDN/WAFを手前に置くと、GitHub Actionsからのアクセスは
+    データセンターのIPから来る自動化として弾かれる。送信元IPが固定でないため
+    IP許可は使えないので、代わりに共有シークレットをヘッダで送り、
+    WAF側で「このヘッダが一致したらセキュリティ機能を回避」する形で通す。
+
+    値はシークレットなのでログには出さない（名前だけ出す）。
+    """
+    headers: dict[str, str] = {}
+    for line in os.environ.get("WP_EXTRA_HEADERS", "").replace("\r", "").split("\n"):
+        name, sep, value = line.strip().partition(":")
+        if not sep:
+            continue
+        name, value = name.strip(), value.strip()
+        if name and value:
+            headers[name] = value
+    return headers
+
+
 def set_dry_run(value: bool) -> None:
     """dry-run 実行であることを記録する（遮断の目印ファイルを作らないため）。"""
     global _dry_run
@@ -1004,6 +1025,12 @@ class WordPressClient:
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
         })
+
+        # CDN/WAFを通すための追加ヘッダ（値はシークレットなので名前だけ出す）
+        additional = extra_headers()
+        if additional:
+            self.session.headers.update(additional)
+            print(f"  追加ヘッダを送信します: {', '.join(sorted(additional))}")
 
         retry = Retry(
             # 自動投稿では、遮断後の連続再試行がBot判定を強めるため最小限にする。
