@@ -8,26 +8,20 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
-import os
 import re
 from pathlib import Path
 from urllib.parse import urlparse
-
-import geo_meta
-
-# 字数・本数の許容幅。規定の範囲を外れても、この割合までのズレは警告にとどめて
-# 投稿を止めない。生成AIの出力は毎回きっちり範囲へ収まるわけではなく、
-# 数十字のズレで1枠まるごと落とすと投稿そのものが止まってしまうため。
-# 範囲を大きく外れた場合と、節や一次情報がそもそも無い場合は従来どおりエラー。
-# 0 にすれば従来と同じ厳密判定に戻る。
-RANGE_SLACK = float(os.environ.get("GEO_RANGE_SLACK", "0.2").strip() or "0.2")
 
 PRIMARY_DOMAINS = {
     "jvn.jp", "ipa.go.jp", "jpcert.or.jp", "nisc.go.jp", "npa.go.jp",
     "soumu.go.jp", "meti.go.jp", "ppc.go.jp", "nvd.nist.gov", "nist.gov",
     "cisa.gov", "cve.org", "mitre.org", "first.org",
 }
+
+FORBIDDEN_BODY_H2 = {"FAQ", "よくある質問", "参考情報", "参考・出典"}
+CORE_TARGET_MIN = 700
+CORE_TARGET_MAX = 950
+CORE_HARD_MAX = 1000
 
 
 def compact(value: str) -> str:
@@ -127,10 +121,14 @@ def urls(text: str) -> list[str]:
 
 def is_primary(url: str) -> bool:
     try:
-        host = urlparse(url).netloc.lower().split(":")[0]
+        parsed = urlparse(url)
+        host = parsed.netloc.lower().split(":")[0]
     except ValueError:
         return False
-    return any(host == domain or host.endswith("." + domain) for domain in PRIMARY_DOMAINS)
+    if any(host == domain or host.endswith("." + domain) for domain in PRIMARY_DOMAINS):
+        return True
+    # 開発元がGitHub Security Advisoryを一次情報として公開する場合に対応する。
+    return host == "github.com" and "/security/advisories/" in parsed.path
 
 
 def remove_reference_box(text: str) -> str:
@@ -169,6 +167,23 @@ def summary_text(body: str) -> str:
 
 def section_before_h3(section_body: str) -> str:
     return re.split(r"^###\s+", section_body, maxsplit=1, flags=re.M)[0]
+
+
+def h2_direct_lead(section_body: str) -> str:
+    """H2直下の最初の説明段落を返す（H3・表・箇条書きより前）。"""
+    before_h3 = section_before_h3(section_body)
+    paragraphs = re.split(r"\n\s*\n", before_h3.strip())
+    for paragraph in paragraphs:
+        value = paragraph.strip()
+        if not value:
+            continue
+        # コメントやHTMLブロックは説明文として数えない。
+        if value.startswith("<!--") or value.startswith("<"):
+            continue
+        if any(list_or_table(line) for line in value.splitlines()):
+            return ""
+        return value
+    return ""
 
 
 def list_or_table(line: str) -> bool:
@@ -212,35 +227,10 @@ def list_table_errors(body: str) -> list[str]:
     return errors
 
 
-def body_faq_errors(body: str, front_faq: list[tuple[str, str]]) -> list[str]:
-    errors: list[str] = []
-    sections = h2_sections(body)
-    faq_body = next((section for title, section in sections if title == "FAQ"), "")
-    questions = list(re.finditer(r"^###\s+(.+?)\s*$", faq_body, flags=re.M))
-    if len(questions) < 2:
-        errors.append("## FAQにH3質問が2問以上ありません")
-        return errors
-    body_questions: list[str] = []
-    for index, question in enumerate(questions):
-        end = questions[index + 1].start() if index + 1 < len(questions) else len(faq_body)
-        answer = faq_body[question.end():end]
-        if chars(answer) == 0:
-            errors.append(f"FAQ『{question.group(1).strip()}』の回答がありません")
-        body_questions.append(compact(question.group(1)))
-    front_questions = [compact(question) for question, _ in front_faq]
-    if front_questions and body_questions[:len(front_questions)] != front_questions[:len(body_questions)]:
-        errors.append("本文FAQとフロントマターfaqの質問が一致していません")
-    return errors
-
-
 def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
-    """(エラー, 警告) を返す。
-
-    句点の抜けや本文FAQとの表記ずれなど、内容の判断が不要な不備は
-    geo_meta.normalize_front_matter() が投稿時と同じ手順で補正する。
-    補正できたものは警告に回し、内容を書き足す必要があるものだけエラーにする。
-    """
+    """CyberNote記事の厳密な品質判定を (エラー, 警告) で返す。"""
     errors: list[str] = []
+    warnings: list[str] = []
 
     raw = {
         "answer": value_line(front, "answer"),
@@ -250,31 +240,12 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             {"title": t, "url": u, "publisher": p} for t, u, p in source_items(front)
         ],
     }
-    normalized, warnings = geo_meta.normalize_front_matter(raw, body)
 
     def check_range(label: str, count: int, low: int, high: int, unit: str = "字") -> None:
-        """規定範囲を外れたときに、ズレの大きさでエラーと警告を振り分ける。"""
-        if low <= count <= high:
-            return
-        message = f"{label}が{low}〜{high}{unit}ではありません（{count}{unit}）"
-        slack_low = math.floor(low * (1 - RANGE_SLACK))
-        slack_high = math.ceil(high * (1 + RANGE_SLACK))
-        if slack_low <= count <= slack_high:
-            warnings.append(f"{message} ※許容範囲内のため投稿は止めません")
-        else:
-            errors.append(message)
+        if not low <= count <= high:
+            errors.append(f"{label}が{low}〜{high}{unit}ではありません（{count}{unit}）")
 
-    def check_min(label: str, count: int, low: int, unit: str = "本") -> None:
-        """下限だけの判定。下限を少し下回る程度なら警告にとどめる。"""
-        if count >= low:
-            return
-        message = f"{label}が{low}{unit}未満です（{count}{unit}）"
-        if count >= math.floor(low * (1 - RANGE_SLACK)):
-            warnings.append(f"{message} ※許容範囲内のため投稿は止めません")
-        else:
-            errors.append(message)
-
-    answer = normalized.get("answer", "")
+    answer = raw.get("answer", "")
     if not answer:
         errors.append("フロントマターanswerがありません")
     elif not answer.endswith("。"):
@@ -285,7 +256,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     if re.search(r"(?m)^cve:", front) is None:
         errors.append("フロントマターcveがありません")
 
-    front_faq = [(r.get("q", ""), r.get("a", "")) for r in normalized.get("faq", [])]
+    front_faq = [(r.get("q", ""), r.get("a", "")) for r in raw.get("faq", [])]
     if len(front_faq) < 2:
         errors.append("フロントマターfaqが2問未満です")
     for question, answer_text in front_faq:
@@ -296,33 +267,41 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
 
     sources = [
         (r.get("title", ""), r.get("url", ""), r.get("publisher", ""))
-        for r in normalized.get("sources", [])
+        for r in raw.get("sources", [])
     ]
-    if len(sources) < 2:
-        errors.append("フロントマターsourcesが2件未満です")
+    if len(sources) < 1:
+        errors.append("フロントマターsourcesが1件未満です")
+    for title, url, publisher in sources:
+        if not title or not url or not publisher:
+            errors.append("フロントマターsourcesのtitle/url/publisherが未入力です")
     if not any(is_primary(url) for _, url, _ in sources):
         errors.append("フロントマターsourcesに一次情報ドメインがありません")
 
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
+    core_count = chars(body)
+    if core_count < CORE_TARGET_MIN:
+        errors.append(f"本文コアが{CORE_TARGET_MIN}字未満です（{core_count}字）")
+    elif core_count > CORE_HARD_MAX:
+        errors.append(f"本文コアが{CORE_HARD_MAX}字を超えています（{core_count}字）")
+    elif core_count > CORE_TARGET_MAX:
+        warnings.append(
+            f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字を超えています"
+            f"（{core_count}字、上限{CORE_HARD_MAX}字以内）"
+        )
+
     sections = h2_sections(body)
-    if not any(title == "FAQ" for title, _ in sections):
-        errors.append("## FAQがありません")
-    errors.extend(body_faq_errors(body, front_faq))
+    forbidden = [title for title, _ in sections if compact(title) in FORBIDDEN_BODY_H2]
+    for title in forbidden:
+        errors.append(f"本文に禁止見出し『## {title}』があります")
 
-    reference_sections = [section for title, section in sections if title == "参考情報"]
-    reference_body = "\n".join(reference_sections)
-    if not reference_sections:
-        errors.append("## 参考情報がありません")
-    if not any(is_primary(url) for url in urls(reference_body)):
-        errors.append("## 参考情報に一次情報リンクがありません")
-
-    summary = summary_text(body)
-    if not summary:
-        errors.append("最後の## まとめがありません")
-    else:
+    summary_matches = list(re.finditer(r"^##\s+まとめ\s*$", body, flags=re.M))
+    if len(summary_matches) != 1:
+        errors.append(f"## まとめが1件ではありません（{len(summary_matches)}件）")
+    if len(summary_matches) == 1:
+        summary = body[summary_matches[0].end():]
         check_range("## まとめ", chars(summary), 250, 300)
-        if re.search(r"^##\s+", summary, flags=re.M):
+        if not sections or sections[-1][0] != "まとめ":
             errors.append("## まとめが記事の最後にありません")
         if re.search(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", summary):
             errors.append("## まとめに箇条書きがあります")
@@ -332,17 +311,17 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
         for url in urls(body)
         if urlparse(url).netloc.lower().endswith("cybernote.click")
     }
-    check_min("CyberNote内部リンク", len(internal), 3)
+    if len(internal) < 3:
+        errors.append(f"CyberNote内部リンクが3本未満です（{len(internal)}本）")
 
     boxes = re.findall(r'<div[^>]*class="[^"]*\bis-style-information-box\b"[^>]*>', body)
     if len(boxes) != 1:
         errors.append(f"参照情報ボックスが1個ではありません（{len(boxes)}個）")
 
     for title, section in sections:
-        if re.search(r"^###\s+", section, flags=re.M):
-            check_range(
-                f"H2『{title}』直下リード", chars(section_before_h3(section)), 100, 150
-            )
+        if title == "まとめ" or compact(title) in FORBIDDEN_BODY_H2:
+            continue
+        check_range(f"H2『{title}』直下リード", chars(h2_direct_lead(section)), 100, 150)
 
     errors.extend(list_table_errors(body))
     return errors, warnings
@@ -391,6 +370,13 @@ def main() -> int:
         warnings: list[str] = []
         core_count = 0
         intro_count = 0
+        answer_count = 0
+        summary_count = 0
+        summary_chars = 0
+        faq_count = 0
+        sources_count = 0
+        primary_sources_count = 0
+        forbidden_h2_count = 0
         filename = str(article) if article else ""
         if article is None:
             errors.append("記事Markdownが見つかりません")
@@ -402,6 +388,17 @@ def main() -> int:
                 geo_error_list, geo_warnings = geo_errors(front, body)
                 errors.extend(geo_error_list)
                 warnings.extend(geo_warnings)
+                answer_count = chars(value_line(front, "answer"))
+                summary_count = len(re.findall(r"^##\s+まとめ\s*$", body, flags=re.M))
+                summary_chars = chars(summary_text(body)) if summary_count else 0
+                faq_count = len(faq_items(front))
+                source_rows = source_items(front)
+                sources_count = len(source_rows)
+                primary_sources_count = sum(is_primary(url) for _, url, _ in source_rows)
+                forbidden_h2_count = sum(
+                    compact(section_title) in FORBIDDEN_BODY_H2
+                    for section_title, _ in h2_sections(body)
+                )
             core_count = chars(body)
             intro_count = chars(intro_text(body))
         status = "ERROR" if errors else ("WARN" if warnings else "OK")
@@ -412,6 +409,13 @@ def main() -> int:
             "article_file": filename,
             "本文コア文字数": core_count,
             "序文文字数": intro_count,
+            "answer文字数": answer_count,
+            "まとめ文字数": summary_chars,
+            "まとめ件数": summary_count,
+            "faq件数": faq_count,
+            "sources件数": sources_count,
+            "一次情報件数": primary_sources_count,
+            "禁止見出し件数": forbidden_h2_count,
             "status": status,
             "errors": " / ".join(errors),
             "warnings": " / ".join(warnings),
@@ -420,7 +424,11 @@ def main() -> int:
 
     result_path = Path(args.results)
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["No", "記事タイトル", "article_file", "本文コア文字数", "序文文字数", "status", "errors", "warnings", "mode"]
+    fields = [
+        "No", "記事タイトル", "article_file", "本文コア文字数", "序文文字数",
+        "answer文字数", "まとめ文字数", "まとめ件数", "faq件数", "sources件数",
+        "一次情報件数", "禁止見出し件数", "status", "errors", "warnings", "mode",
+    ]
     with result_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()

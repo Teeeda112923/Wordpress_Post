@@ -656,11 +656,14 @@ def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> 
       - 3:2 比率でない    -> WARN / 要画像確認   / アイキャッチ画像の比率が3:2ではありません
       - 読み込めない      -> NG   / 要画像確認   / アイキャッチ画像のサイズが取得できません
       - 上記をすべて満たす -> OK   / 画像確認済み / （エラーなし）
-    推奨サイズは 1200x800px（3:2）。ファイル名が No と対応しているかも併せて確認する。
+    CyberNote短編ニュースではPNG署名・PNG形式・1200x800px・完全デコードを
+    すべて必須とする。一般記事は後方互換のため、従来どおり形式と比率の違いを
+    WARNにとどめる。ファイル名が No と対応しているかも併せて確認する。
     """
     names = row_no_to_names(no_value)
     no3 = names[0] if names else safe_str(no_value)
     expected = images_dir / f"{no3}.png"
+    strict_cybernote = "cybernote-security-news" in images_dir.parts
 
     def make(level: str, status_label: str, error_content: str, log: str) -> dict[str, Any]:
         return {
@@ -673,6 +676,16 @@ def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> 
     if image_path is None or not image_path.exists():
         return make("NG", "画像未作成", "アイキャッチ画像が見つかりません",
                     f"[NG] {no3} {expected} not found")
+
+    if strict_cybernote:
+        try:
+            signature = image_path.read_bytes()[:8]
+        except Exception as exc:
+            return make("NG", "要画像確認", "アイキャッチ画像を読み込めません",
+                        f"[NG] {no3} {image_path} cannot read bytes ({exc})")
+        if signature != b"\x89PNG\r\n\x1a\n":
+            return make("NG", "要画像確認", "アイキャッチ画像のPNG署名が不正です",
+                        f"[NG] {no3} {image_path} invalid PNG signature")
 
     try:
         from PIL import Image  # 遅延 import
@@ -696,8 +709,13 @@ def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> 
                     f"[NG] {no3} {image_path} broken image data ({exc})")
 
     if (fmt or "").upper() != "PNG":
-        return make("WARN", "要画像確認", "アイキャッチ画像がPNG形式ではありません",
-                    f"[WARN] {no3} {image_path} is not PNG ({fmt}, {width}x{height})")
+        level = "NG" if strict_cybernote else "WARN"
+        return make(level, "要画像確認", "アイキャッチ画像がPNG形式ではありません",
+                    f"[{level}] {no3} {image_path} is not PNG ({fmt}, {width}x{height})")
+
+    if strict_cybernote and (width, height) != (1200, 800):
+        return make("NG", "要画像確認", "アイキャッチ画像が1200x800pxではありません",
+                    f"[NG] {no3} {image_path} size is not 1200x800 ({width}x{height})")
 
     ratio = width / height if height else 0
     if abs(ratio - 1.5) > 0.05:  # 3:2 = 1.5
@@ -2099,6 +2117,16 @@ def main() -> int:
             print(f"  [警告] GEO情報の組み立てに失敗しました: {exc}")
         # フロントマターは本文に出さない（区切り線として描画されるのを防ぐ）
         _, md_text = geo_kit.parse_front_matter(md_text)
+        # CyberNote短編ニュースではFAQと出典をGEO Kitが表示する。品質ゲートを
+        # 経由しない手動投稿でも二重表示させないため、この領域に限って本文側の
+        # 同義セクションを投稿直前に除去する（一般記事には適用しない）。
+        if "cybernote-security-news" in article_path.parts:
+            md_text, removed_sections = geo_kit.strip_plugin_generated_sections(md_text)
+            if removed_sections:
+                print(
+                    "  [補正] GEO Kitと重複する本文見出しを除去しました: "
+                    + ", ".join(f"## {title}" for title in removed_sections)
+                )
         # FAQの改行・内部リンクのブログカード化・KW表記整合などの補正を適用する
         md_text = enhance_article_markdown(
             md_text, no_to_url, kw, align_focus_keyword(kw, title)

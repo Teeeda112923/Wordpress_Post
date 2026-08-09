@@ -17,6 +17,7 @@ from PIL import Image
 
 TARGET_WIDTH = 1200
 TARGET_HEIGHT = 800
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 COL_NO = ["No", "番号", "記事No", "ID"]
 COL_KW = ["指定KW", "管理KW", "KW", "キーワード"]
@@ -28,6 +29,7 @@ PROMPT_SUFFIX = (
     "\n\n【生成時の最終確認】\n"
     "・1記事につき1枚だけ生成する\n"
     "・横長3:2、最終出力1200×800px、PNG\n"
+    "・日本語フォントはNoto Sans JPを使用する\n"
     "・コラージュ、グリッド、分割画面、複数案の一覧にしない\n"
     "・記事番号、会社ロゴ、架空ロゴ、URLを入れない\n"
     "・日本語文字は指定どおり正確に、大きく読みやすく表示する\n"
@@ -83,6 +85,25 @@ def load_api_key() -> str:
     return key
 
 
+def validate_png_bytes(png_bytes: bytes) -> None:
+    """PNG署名・形式・寸法・画素データの完全デコードを検査する。"""
+    if not png_bytes.startswith(PNG_SIGNATURE):
+        raise RuntimeError("PNG署名が不正です")
+    with Image.open(io.BytesIO(png_bytes)) as verify:
+        verify.load()
+        if verify.format != "PNG":
+            raise RuntimeError(f"画像形式がPNGではありません: {verify.format}")
+        if verify.size != (TARGET_WIDTH, TARGET_HEIGHT):
+            raise RuntimeError(
+                f"PNG画像サイズが不正です: {verify.size[0]}x{verify.size[1]}"
+            )
+
+
+def validate_png_file(path: Path) -> None:
+    """保存済みファイルをバイト列から読み直して完全検証する。"""
+    validate_png_bytes(path.read_bytes())
+
+
 def to_png(image_bytes: bytes) -> bytes:
     with Image.open(io.BytesIO(image_bytes)) as source:
         source.load()
@@ -102,14 +123,7 @@ def to_png(image_bytes: bytes) -> bytes:
     image.save(output, "PNG")
     png_bytes = output.getvalue()
     # API応答や変換処理が不完全な場合は、保存前に検知して呼び出し側で再試行する。
-    with Image.open(io.BytesIO(png_bytes)) as verify:
-        verify.load()
-        if verify.format != "PNG":
-            raise RuntimeError("PNG変換後の画像形式を検証できません")
-        if verify.size != (TARGET_WIDTH, TARGET_HEIGHT):
-            raise RuntimeError(
-                f"PNG変換後の画像サイズが不正です: {verify.size[0]}x{verify.size[1]}"
-            )
+    validate_png_bytes(png_bytes)
     return png_bytes
 
 
@@ -127,13 +141,11 @@ def write_verified_png(output_path: Path, png_bytes: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
 
-        with Image.open(temp_name) as verify:
-            verify.load()
-            if verify.format != "PNG" or verify.size != (TARGET_WIDTH, TARGET_HEIGHT):
-                raise RuntimeError("保存後のPNG検証に失敗しました")
+        validate_png_file(Path(temp_name))
 
         os.replace(temp_name, output_path)
         temp_name = None
+        validate_png_file(output_path)
     finally:
         if temp_name:
             Path(temp_name).unlink(missing_ok=True)

@@ -8,7 +8,8 @@
     _cng_faq     : FAQ [{"q": ..., "a": ...}, ...] のJSON
     _cng_sources : 出典 [{"title":..., "url":..., "publisher":...}, ...] のJSON
 
-値の取得元は次の優先順。
+値の取得元は次の優先順。CyberNote短編ニュースは1のみを必須とし、2は旧記事を
+手動投稿する場合の後方互換として残す。
 
     1. 記事Markdown先頭のフロントマター（answer / cve / faq / sources）
     2. 本文からの抽出（H2「FAQ」、H2「参考情報」、冒頭リード、CVE番号）
@@ -71,6 +72,7 @@ _PUBLISHER_BY_DOMAIN = (
 
 _FAQ_HEADINGS = ("FAQ", "よくある質問")
 _SOURCE_HEADINGS = ("参考情報", "参考・出典", "出典元", "出典", "参考")
+_PLUGIN_RENDERED_HEADINGS = ("FAQ", "よくある質問", "参考情報", "参考・出典")
 
 _ANSWER_MIN = 40
 _ANSWER_MAX = 60
@@ -216,6 +218,29 @@ def _iter_h2_sections(body_md: str):
 def _matches_heading(title: str, candidates) -> bool:
     t = re.sub(r"\s+", "", _safe(title))
     return any(t == re.sub(r"\s+", "", c) for c in candidates)
+
+
+def strip_plugin_generated_sections(body_md: str) -> tuple[str, list[str]]:
+    """GEO Kitが生成するFAQ・出典と重複する本文H2を取り除く。
+
+    品質ゲートは該当見出しをエラーにするが、チェッカーを経由しない手動実行でも
+    二重表示を起こさないための投稿直前の防御として使う。
+    """
+    kept: list[str] = []
+    removed: list[str] = []
+    skipping = False
+    for line in (body_md or "").splitlines():
+        match = re.match(r"^##\s+(.+?)\s*$", line)
+        if match:
+            title = match.group(1).strip()
+            if _matches_heading(title, _PLUGIN_RENDERED_HEADINGS):
+                removed.append(title)
+                skipping = True
+                continue
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    return "\n".join(kept).rstrip() + "\n", removed
 
 
 def extract_faq(body_md: str, limit: int = 5) -> list[dict]:

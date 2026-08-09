@@ -109,6 +109,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Run CyberNote regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
       # Imunify360 の遮断は数時間続くことがある。wp_auto_post.py 側の再試行
       # （既定10分→20分）で足りなかった分を、実行し直しの前に待って埋める。
       # 通常の実行（retry_attempt が空か 0）では待たない。
