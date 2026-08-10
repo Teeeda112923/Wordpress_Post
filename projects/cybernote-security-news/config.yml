@@ -3,6 +3,11 @@ source_lookback_hours: 24
 max_candidates_per_check: 10
 max_posts_per_day: 3
 
+selection:
+  min_cvss: 8.0
+  require_mainstream_product: true
+  skip_if_no_eligible_candidate: true
+
 article:
   hard_min_chars: 1000
   max_chars: 1800
