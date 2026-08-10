@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+from collections import Counter
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -18,10 +19,14 @@ PRIMARY_DOMAINS = {
     "cisa.gov", "cve.org", "mitre.org", "first.org",
 }
 
-FORBIDDEN_BODY_H2 = {"FAQ", "よくある質問", "参考情報", "参考・出典"}
-CORE_TARGET_MIN = 700
-CORE_TARGET_MAX = 950
-CORE_HARD_MAX = 1000
+PLUGIN_GENERATED_H2 = {"FAQ", "よくある質問", "参考情報", "参考・出典"}
+SUMMARY_ALIAS_H2 = {"結論", "総括", "最後に", "この記事のまとめ", "対応のまとめ"}
+FORBIDDEN_BODY_H2 = PLUGIN_GENERATED_H2 | SUMMARY_ALIAS_H2
+
+CORE_HARD_MIN = 1000
+CORE_TARGET_MIN = 1300
+CORE_TARGET_MAX = 1600
+CORE_HARD_MAX = 1800
 
 
 def compact(value: str) -> str:
@@ -117,6 +122,27 @@ def source_items(front: str) -> list[tuple[str, str, str]]:
 
 def urls(text: str) -> list[str]:
     return re.findall(r"https?://[^\s)\"'<>]+", text or "")
+
+
+def normalized_url(url: str) -> str:
+    return (url or "").rstrip(".,。")
+
+
+def internal_urls(body: str) -> list[str]:
+    return [
+        normalized_url(url)
+        for url in urls(body)
+        if urlparse(url).netloc.lower().endswith("cybernote.click")
+    ]
+
+
+def duplicate_headings(body: str) -> list[str]:
+    headings = [
+        title.strip()
+        for title in re.findall(r"^#{2,3}\s+(.+?)\s*$", body, flags=re.M)
+    ]
+    counts = Counter(compact(title) for title in headings)
+    return [title for title in headings if counts[compact(title)] > 1]
 
 
 def is_primary(url: str) -> bool:
@@ -280,14 +306,19 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
     core_count = chars(body)
-    if core_count < CORE_TARGET_MIN:
-        errors.append(f"本文コアが{CORE_TARGET_MIN}字未満です（{core_count}字）")
+    if core_count < CORE_HARD_MIN:
+        errors.append(f"本文コアが絶対最低値{CORE_HARD_MIN}字未満です（{core_count}字）")
+    elif core_count < CORE_TARGET_MIN:
+        warnings.append(
+            f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字未満です"
+            f"（{core_count}字、保存前に内容を補足して再校正してください）"
+        )
     elif core_count > CORE_HARD_MAX:
-        errors.append(f"本文コアが{CORE_HARD_MAX}字を超えています（{core_count}字）")
+        errors.append(f"本文コアが絶対上限{CORE_HARD_MAX}字を超えています（{core_count}字）")
     elif core_count > CORE_TARGET_MAX:
         warnings.append(
             f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字を超えています"
-            f"（{core_count}字、上限{CORE_HARD_MAX}字以内）"
+            f"（{core_count}字、重複や冗長表現を再校正してください）"
         )
 
     sections = h2_sections(body)
@@ -306,17 +337,36 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
         if re.search(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", summary):
             errors.append("## まとめに箇条書きがあります")
 
-    internal = {
-        url.rstrip(".,。")
-        for url in urls(body)
-        if urlparse(url).netloc.lower().endswith("cybernote.click")
-    }
-    if len(internal) < 3:
-        errors.append(f"CyberNote内部リンクが3本未満です（{len(internal)}本）")
+    internal = internal_urls(body)
+    unique_internal = set(internal)
+    if len(unique_internal) < 3:
+        errors.append(f"CyberNote内部リンクが3本未満です（{len(unique_internal)}本）")
+    duplicated_internal = sorted(
+        url for url, count in Counter(internal).items() if count > 1
+    )
+    if duplicated_internal:
+        errors.append(
+            "同一CyberNote内部リンクが重複しています（"
+            + "、".join(duplicated_internal)
+            + "）"
+        )
 
     boxes = re.findall(r'<div[^>]*class="[^"]*\bis-style-information-box\b"[^>]*>', body)
     if len(boxes) != 1:
         errors.append(f"参照情報ボックスが1個ではありません（{len(boxes)}個）")
+    blogcards = re.findall(r"<!--\s*wp:cocoon-blocks/embed-blogcard\b", body, flags=re.I)
+    if len(blogcards) != 1:
+        errors.append(f"Cocoon参照ブログカードが1個ではありません（{len(blogcards)}個）")
+    first_box = re.search(
+        r'<div[^>]*class="[^"]*\bis-style-information-box\b"[^>]*>', body
+    )
+    first_h2 = re.search(r"^##\s+", body, flags=re.M)
+    if first_box and first_h2 and first_box.start() > first_h2.start():
+        errors.append("参照情報ボックスが最初のH2見出しより前にありません")
+
+    repeated_headings = sorted(set(duplicate_headings(body)))
+    if repeated_headings:
+        errors.append("同じ見出しが複数あります（" + "、".join(repeated_headings) + "）")
 
     for title, section in sections:
         if title == "まとめ" or compact(title) in FORBIDDEN_BODY_H2:
@@ -377,6 +427,11 @@ def main() -> int:
         sources_count = 0
         primary_sources_count = 0
         forbidden_h2_count = 0
+        internal_link_count = 0
+        duplicate_internal_link_count = 0
+        reference_box_count = 0
+        blogcard_count = 0
+        duplicate_heading_count = 0
         filename = str(article) if article else ""
         if article is None:
             errors.append("記事Markdownが見つかりません")
@@ -399,6 +454,18 @@ def main() -> int:
                     compact(section_title) in FORBIDDEN_BODY_H2
                     for section_title, _ in h2_sections(body)
                 )
+                article_internal_urls = internal_urls(body)
+                internal_link_count = len(set(article_internal_urls))
+                duplicate_internal_link_count = sum(
+                    count > 1 for count in Counter(article_internal_urls).values()
+                )
+                reference_box_count = len(re.findall(
+                    r'<div[^>]*class="[^"]*\bis-style-information-box\b"[^>]*>', body
+                ))
+                blogcard_count = len(re.findall(
+                    r"<!--\s*wp:cocoon-blocks/embed-blogcard\b", body, flags=re.I
+                ))
+                duplicate_heading_count = len(set(duplicate_headings(body)))
             core_count = chars(body)
             intro_count = chars(intro_text(body))
         status = "ERROR" if errors else ("WARN" if warnings else "OK")
@@ -416,6 +483,11 @@ def main() -> int:
             "sources件数": sources_count,
             "一次情報件数": primary_sources_count,
             "禁止見出し件数": forbidden_h2_count,
+            "内部リンク件数": internal_link_count,
+            "重複内部リンク件数": duplicate_internal_link_count,
+            "参照情報ボックス件数": reference_box_count,
+            "Cocoonブログカード件数": blogcard_count,
+            "重複見出し件数": duplicate_heading_count,
             "status": status,
             "errors": " / ".join(errors),
             "warnings": " / ".join(warnings),
@@ -427,7 +499,9 @@ def main() -> int:
     fields = [
         "No", "記事タイトル", "article_file", "本文コア文字数", "序文文字数",
         "answer文字数", "まとめ文字数", "まとめ件数", "faq件数", "sources件数",
-        "一次情報件数", "禁止見出し件数", "status", "errors", "warnings", "mode",
+        "一次情報件数", "禁止見出し件数", "内部リンク件数", "重複内部リンク件数",
+        "参照情報ボックス件数", "Cocoonブログカード件数", "重複見出し件数",
+        "status", "errors", "warnings", "mode",
     ]
     with result_path.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)

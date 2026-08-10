@@ -40,13 +40,21 @@ def valid_body() -> str:
         "# テスト記事\n\n"
         + "導" * 260
         + "\n\n"
-        '<div class="wp-block-group is-style-information-box">参照</div>\n\n'
+        '<!-- wp:group {"className":"is-style-information-box"} -->\n'
+        '<div class="wp-block-group is-style-information-box">参照\n'
+        '<!-- wp:cocoon-blocks/embed-blogcard {"url":"https://www.cisa.gov/test"} /-->'
+        "</div>\n"
+        "<!-- /wp:group -->\n\n"
         "## 概要\n\n"
         + "影" * 110
         + links
         + "\n\n"
+        + "詳" * 300
+        + "\n\n"
         "## 対策\n\n"
         + "対" * 120
+        + "\n\n"
+        + "補" * 300
         + "\n\n"
         "## まとめ\n\n"
         + "総" * 270
@@ -92,13 +100,51 @@ class QualityRuleTests(unittest.TestCase):
         self.assertIn("フロントマターsourcesに一次情報ドメインがありません", errors)
 
     def test_core_length_has_minimum_and_hard_maximum(self) -> None:
-        short = valid_body().replace("対" * 120, "対" * 5)
+        short = valid_body().replace("詳" * 300, "詳" * 5).replace("補" * 300, "補" * 5)
         errors, _ = quality.geo_errors(valid_front(), short)
-        self.assertTrue(any(error.startswith("本文コアが700字未満") for error in errors))
+        self.assertTrue(
+            any(error.startswith("本文コアが絶対最低値1000字未満") for error in errors)
+        )
 
-        long = valid_body().replace("対" * 120, "対" * 350)
+        long = valid_body().replace("詳" * 300, "詳" * 850)
         errors, _ = quality.geo_errors(valid_front(), long)
-        self.assertTrue(any(error.startswith("本文コアが1000字を超え") for error in errors))
+        self.assertTrue(
+            any(error.startswith("本文コアが絶対上限1800字を超え") for error in errors)
+        )
+
+    def test_core_target_bands_warn_and_target_passes(self) -> None:
+        self.assertEqual([], quality.geo_errors(valid_front(), valid_body())[1])
+
+        below_target = valid_body().replace("詳" * 300, "詳" * 100)
+        errors, warnings = quality.geo_errors(valid_front(), below_target)
+        self.assertFalse(any("本文コア" in error for error in errors))
+        self.assertTrue(any("目標1300〜1600字未満" in warning for warning in warnings))
+
+        above_target = valid_body().replace("詳" * 300, "詳" * 550)
+        errors, warnings = quality.geo_errors(valid_front(), above_target)
+        self.assertFalse(any("本文コア" in error for error in errors))
+        self.assertTrue(any("目標1300〜1600字を超え" in warning for warning in warnings))
+
+    def test_duplicate_internal_links_are_rejected(self) -> None:
+        body = valid_body().replace("https://www.cybernote.click/c/", "https://www.cybernote.click/a/")
+        errors, _ = quality.geo_errors(valid_front(), body)
+        self.assertTrue(any("同一CyberNote内部リンクが重複" in error for error in errors))
+
+    def test_reference_blogcard_and_heading_rules(self) -> None:
+        missing_blogcard = valid_body().replace(
+            '<!-- wp:cocoon-blocks/embed-blogcard {"url":"https://www.cisa.gov/test"} /-->',
+            "",
+        )
+        errors, _ = quality.geo_errors(valid_front(), missing_blogcard)
+        self.assertIn("Cocoon参照ブログカードが1個ではありません（0個）", errors)
+
+        duplicate_heading = valid_body().replace("## 対策", "## 概要")
+        errors, _ = quality.geo_errors(valid_front(), duplicate_heading)
+        self.assertIn("同じ見出しが複数あります（概要）", errors)
+
+        summary_alias = valid_body().replace("## 対策", "## 結論")
+        errors, _ = quality.geo_errors(valid_front(), summary_alias)
+        self.assertIn("本文に禁止見出し『## 結論』があります", errors)
 
 
 class CyberNoteImageRuleTests(unittest.TestCase):

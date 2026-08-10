@@ -1,14 +1,16 @@
 timezone: Asia/Tokyo
 source_lookback_hours: 24
 max_candidates_per_check: 10
-max_posts_per_day: 1
+max_posts_per_day: 3
 
 article:
-  max_chars: 1000
-  target_chars_min: 700
-  target_chars_max: 950
-  intro_max_chars: 240
-  required_internal_links: 1
+  hard_min_chars: 1000
+  max_chars: 1800
+  target_chars_min: 1300
+  target_chars_max: 1600
+  intro_min_chars: 250
+  intro_max_chars: 300
+  required_internal_links: 3
   required_external_links: 1
 
 image:
