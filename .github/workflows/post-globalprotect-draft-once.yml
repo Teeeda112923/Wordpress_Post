@@ -1,0 +1,245 @@
+name: Post GlobalProtect Draft Once
+
+on:
+  push:
+    paths:
+      - 'projects/cybernote-security-news/articles/paloalto-globalprotect-cve-2026-0257-auth-bypass.md'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: post-globalprotect-draft-once
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  IMAGE_PATH: projects/cybernote-security-news/eyecatches/paloalto-globalprotect-cve-2026-0257-auth-bypass.png
+  TARGET_NO: '53'
+
+jobs:
+  post-draft:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-noto-cjk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Append ledger row locally
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          path = Path("projects/cybernote-security-news/data/news_ledger.csv")
+          with path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              rows = list(reader)
+
+          if any(str(row.get("No", "")).strip() == "53" for row in rows):
+              raise SystemExit("No.53 already exists; refusing duplicate")
+          row = {name: "" for name in fieldnames}
+          row.update({
+              "No": "53",
+              "収集日": "2026-07-27",
+              "公開予定日": "2026-08-16",
+              "記事分類": "VPN・ネットワーク脆弱性",
+              "指定KW": "GlobalProtect",
+              "話題性スコア": "96",
+              "記事タイトル案": "Palo Alto Networks GlobalProtectの認証回避脆弱性CVE-2026-0257、実悪用を確認",
+              "記事タイトル": "【緊急】GlobalProtect認証回避脆弱性CVE-2026-0257、実悪用を確認",
+              "スラッグ": "paloalto-globalprotect-cve-2026-0257-auth-bypass",
+              "メタディスクリプション": "GlobalProtectのCVE-2026-0257を解説。CVSS 9.1、実悪用状況、対象PAN-OS、修正版への更新と確認事項をまとめます。",
+              "WPカテゴリ": "サイバーセキュリティ",
+              "タグ案": "Palo Alto Networks,GlobalProtect,PAN-OS,CVE-2026-0257,VPN,認証回避",
+              "記事ファイル": "projects/cybernote-security-news/articles/paloalto-globalprotect-cve-2026-0257-auth-bypass.md",
+              "画像ファイル名": "projects/cybernote-security-news/eyecatches/paloalto-globalprotect-cve-2026-0257-auth-bypass.png",
+              "主な出典URL": "https://security.paloaltonetworks.com/CVE-2026-0257",
+              "内部リンクURL": "https://www.cybernote.click/2026/05/08/%E3%80%90%E8%84%86%E5%BC%B1%E6%80%A7%E3%80%91cve-2026-0300%E3%81%A8%E3%81%AF%EF%BC%9Fpalo-alto-networks%E8%A3%BDpan-os%E3%81%AE%E9%87%8D%E5%A4%A7%E8%84%86%E5%BC%B1%E6%80%A7%E3%81%A8%E4%BC%81%E6%A5%AD/",
+              "目標文字数": "1500",
+              "生成ステータス": "生成済み",
+              "レビュー判定": "未確認",
+              "公開停止": "",
+              "投稿ステータス": "",
+              "候補ID": "20260727-003",
+          })
+          rows.append(row)
+          with path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(rows)
+          print("No.53 appended to working tree.")
+          PY
+
+      - name: Generate and validate eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          out = Path("projects/cybernote-security-news/eyecatches/paloalto-globalprotect-cve-2026-0257-auth-bypass.png")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          W, H = 1200, 800
+          img = Image.new("RGB", (W, H), "#0B1F33")
+          d = ImageDraw.Draw(img)
+
+          font_regular = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"
+          font_bold = "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"
+          if not Path(font_regular).exists() or not Path(font_bold).exists():
+              raise SystemExit("Noto Sans CJK font not found")
+
+          f_label = ImageFont.truetype(font_bold, 38)
+          f_product = ImageFont.truetype(font_bold, 82)
+          f_cve = ImageFont.truetype(font_bold, 56)
+          f_status = ImageFont.truetype(font_bold, 46)
+          f_action = ImageFont.truetype(font_bold, 40)
+          f_small = ImageFont.truetype(font_regular, 26)
+
+          for x in range(80, W, 120):
+              d.line((x, 60, x, H-60), fill="#12324D", width=1)
+          for y in range(80, H, 100):
+              d.line((60, y, W-60, y), fill="#12324D", width=1)
+          for x, y in [(950,120),(1040,190),(930,270),(1060,350),(970,430),(1080,520)]:
+              d.ellipse((x-7,y-7,x+7,y+7), fill="#22D3EE")
+          d.line([(950,120),(1040,190),(930,270),(1060,350),(970,430),(1080,520)], fill="#22D3EE", width=3)
+
+          d.rounded_rectangle((72, 62, 344, 122), radius=18, fill="#F43F5E")
+          d.text((94, 70), "SECURITY ALERT", font=f_label, fill="white")
+          d.text((74, 176), "GlobalProtect", font=f_product, fill="white")
+          d.text((76, 286), "CVE-2026-0257", font=f_cve, fill="#22D3EE")
+          d.text((76, 382), "認証回避の実悪用を確認", font=f_status, fill="white")
+          d.rounded_rectangle((72, 500, 910, 610), radius=24, fill="#102B45", outline="#34D399", width=4)
+          d.text((104, 528), "対処：PAN-OSを修正版へ更新", font=f_action, fill="#34D399")
+          d.text((76, 690), "CyberNote  |  Security News", font=f_small, fill="#A9C4D8")
+          img.save(out, "PNG", optimize=True)
+
+          sig = out.read_bytes()[:8]
+          if sig != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit(f"Invalid PNG signature: {sig!r}")
+          with Image.open(out) as im:
+              im.load()
+              if im.size != (1200, 800):
+                  raise SystemExit(f"Invalid dimensions: {im.size}")
+              if im.mode != "RGB":
+                  raise SystemExit(f"Invalid mode: {im.mode}")
+          if out.stat().st_size <= 0:
+              raise SystemExit("PNG is empty")
+          print(f"PNG OK size={out.stat().st_size} dimensions=1200x800 mode=RGB")
+          PY
+
+      - name: Article quality gate
+        run: |
+          mkdir -p "$RESULTS_DIR"
+          python article_quality_check.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --results "$RESULTS_DIR/article_quality_results.csv" \
+            --nos "$TARGET_NO" \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+
+      - name: Commit validated eyecatch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$IMAGE_PATH"
+          git commit -m "Add GlobalProtect eyecatch"
+          git push
+
+      - name: Post to WordPress as draft
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status draft \
+            --write-mode create_only \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NO" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify result and update ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          from pathlib import Path
+
+          results = sorted(Path("projects/cybernote-security-news/results").glob("results_*.csv"))
+          if not results:
+              raise SystemExit("投稿結果CSVが見つかりません")
+          with results[-1].open(encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+          matches = [r for r in rows if str(r.get("no", "")).strip() == "53"]
+          if not matches:
+              raise SystemExit("No.53の投稿結果が見つかりません")
+          result = matches[-1]
+          status = (result.get("status") or "").strip().lower()
+          if status not in {"posted", "updated"}:
+              raise SystemExit(f"投稿失敗: {status} {result.get('error_content') or result.get('message') or ''}")
+
+          ledger = Path("projects/cybernote-security-news/data/news_ledger.csv")
+          with ledger.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+          found = False
+          for row in ledger_rows:
+              if str(row.get("No", "")).strip() == "53":
+                  row["投稿ステータス"] = "下書き済み"
+                  row["WP投稿ID"] = result.get("post_id", "")
+                  row["WP投稿URL"] = result.get("post_link", "")
+                  row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                  row["エラー内容"] = ""
+                  found = True
+                  break
+          if not found:
+              raise SystemExit("管理簿にNo.53がありません")
+          with ledger.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          print(f"draft post_id={result.get('post_id','')} link={result.get('post_link','')}")
+          PY
+
+      - name: Commit ledger
+        run: |
+          git add "$LEDGER"
+          git commit -m "Add GlobalProtect draft status"
+          git push
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: globalprotect-draft-results
+          path: projects/cybernote-security-news/results/*.csv
+          if-no-files-found: warn
+          retention-days: 7
