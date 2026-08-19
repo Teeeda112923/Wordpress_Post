@@ -1,4 +1,5 @@
 name: WP2Shell Follow-up One Shot
+# retry-trigger: 2026-08-19T13:47+09:00
 
 on:
   push:
@@ -70,23 +71,19 @@ jobs:
           img = Image.new("RGB", (width, height), bg)
           draw = ImageDraw.Draw(img)
 
-          # subtle grid
           for x in range(0, width, 60):
               draw.line((x, 0, x, height), fill="#0F2940", width=1)
           for y in range(0, height, 60):
               draw.line((0, y, width, y), fill="#0F2940", width=1)
 
-          # headline area
           draw.text((62, 54), "WP2Shell 続報", font=title_font, fill=white)
           draw.text((66, 162), "実悪用確認・攻撃試行を観測", font=sub_font, fill=cyan)
           draw.rounded_rectangle((62, 235, 1138, 645), radius=28, fill=panel, outline="#1D4667", width=3)
 
-          # shield icon
           shield = [(150, 310), (218, 282), (286, 310), (278, 404), (218, 466), (158, 404)]
           draw.polygon(shield, outline=green, fill="#123A43")
           draw.line((183, 370, 209, 397, 258, 340), fill=green, width=13)
 
-          # abstract attack paths / endpoint panel
           draw.text((345, 292), "WordPress REST API", font=badge_font, fill=white)
           draw.text((345, 339), "CVE-2026-63030 / CVE-2026-60137", font=small_font, fill=muted)
           for i, w in enumerate((650, 575, 490, 620, 540)):
@@ -97,7 +94,6 @@ jobs:
           draw.line((930, 408, 1013, 408), fill=red, width=4)
           draw.text((930, 438), "attack traffic", font=tiny_font, fill=muted)
 
-          # badges
           badges = [
               (62, 690, 305, 748, "CISA KEV", red),
               (327, 690, 615, 748, "実悪用確認", cyan),
