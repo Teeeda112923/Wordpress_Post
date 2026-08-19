@@ -1,13 +1,12 @@
 name: WP2Shell Follow-up One Shot
-# retry-trigger: 2026-08-19T13:47+09:00
 
 on:
-  push:
-    paths:
-      - ".github/workflows/wp2shell-followup-one-shot.yml"
+  issues:
+    types: [opened]
 
 permissions:
   contents: write
+  issues: write
 
 concurrency:
   group: wp2shell-followup-one-shot
@@ -15,6 +14,7 @@ concurrency:
 
 jobs:
   publish:
+    if: github.event.issue.title == '[one-shot] WP2Shell publish'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -70,7 +70,6 @@ jobs:
 
           img = Image.new("RGB", (width, height), bg)
           draw = ImageDraw.Draw(img)
-
           for x in range(0, width, 60):
               draw.line((x, 0, x, height), fill="#0F2940", width=1)
           for y in range(0, height, 60):
@@ -111,7 +110,6 @@ jobs:
           out = Path("projects/cybernote-security-news/eyecatches/wordpress-wp2shell-followup-exploitation-observed.png")
           out.parent.mkdir(parents=True, exist_ok=True)
           img.save(out, format="PNG", optimize=True)
-
           check = Image.open(out)
           check.load()
           assert check.size == (1200, 800)
