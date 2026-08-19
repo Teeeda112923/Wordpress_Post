@@ -30,7 +30,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Certighost v2 publish started. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Certighost v2 publish started. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -93,15 +94,24 @@ jobs:
           python - <<'PY'
           import csv, os
           from pathlib import Path
-          files=sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'),key=lambda p:p.stat().st_mtime)
-          if not files: raise SystemExit('WordPress result CSV not found')
-          with files[-1].open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
-          rows=[r for r in rows if str(r.get('no','')).strip()=='9002']
-          if not rows: raise SystemExit('No.9002 result not found')
-          r=rows[-1]; status=(r.get('status') or '').strip().lower(); post_id=(r.get('post_id') or '').strip(); post_link=(r.get('post_link') or '').strip()
-          print('status:',status); print('post_id:',post_id); print('post_link:',post_link)
-          if status not in {'posted','updated'}: raise SystemExit(r.get('error_content') or r.get('message') or f'unexpected status: {status}')
-          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as out:
+          files = sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'), key=lambda p: p.stat().st_mtime)
+          if not files:
+              raise SystemExit('WordPress result CSV not found')
+          with files[-1].open(encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          rows = [r for r in rows if str(r.get('no', '')).strip() == '9002']
+          if not rows:
+              raise SystemExit('No.9002 result not found')
+          r = rows[-1]
+          status = (r.get('status') or '').strip().lower()
+          post_id = (r.get('post_id') or '').strip()
+          post_link = (r.get('post_link') or '').strip()
+          print('status:', status)
+          print('post_id:', post_id)
+          print('post_link:', post_link)
+          if status not in {'posted', 'updated'}:
+              raise SystemExit(r.get('error_content') or r.get('message') or f'unexpected status: {status}')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
               out.write(f'post_id={post_id}\npost_link={post_link}\n')
           PY
 
@@ -114,30 +124,51 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$IMAGES_DIR/$SLUG.png"
-          if ! git diff --cached --quiet; then git commit -m "Fix Certighost eyecatch dimensions [skip ci]"; fi
+          if ! git diff --cached --quiet; then
+            git commit -m "Fix Certighost eyecatch dimensions [skip ci]"
+          fi
           git fetch origin main
           git rebase origin/main
           python - <<'PY'
           import csv, os
           from datetime import datetime, timezone, timedelta
           from pathlib import Path
-          inp=Path(os.environ['INPUT_FILE']); ledger=Path(os.environ['LEDGER_FILE'])
-          with inp.open(encoding='utf-8-sig',newline='') as f: source=next(csv.DictReader(f))
-          with ledger.open(encoding='utf-8-sig',newline='') as f: reader=csv.DictReader(f); fields=reader.fieldnames; rows=list(reader)
-          if not fields: raise SystemExit('ledger header missing')
-          slug=source['スラッグ']; target=next((r for r in rows if r.get('スラッグ')==slug),None)
+          inp = Path(os.environ['INPUT_FILE'])
+          ledger = Path(os.environ['LEDGER_FILE'])
+          with inp.open(encoding='utf-8-sig', newline='') as f:
+              source = next(csv.DictReader(f))
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              rows = list(reader)
+          if not fields:
+              raise SystemExit('ledger header missing')
+          slug = source['スラッグ']
+          target = next((r for r in rows if r.get('スラッグ') == slug), None)
           if target is None:
-              nums=[]
+              nums = []
               for r in rows:
-                  try: nums.append(int(float(r.get('No') or 0)))
-                  except ValueError: pass
-              target={k:source.get(k,'') for k in fields}; target['No']=str(max(nums,default=0)+1); rows.append(target)
-          target['WP投稿ID']=os.environ.get('POST_ID',''); target['WP投稿URL']=os.environ.get('POST_LINK',''); target['投稿ステータス']='公開済み'; target['最終更新日時']=datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M:%S')
-          with ledger.open('w',encoding='utf-8-sig',newline='') as f: w=csv.DictWriter(f,fieldnames=fields); w.writeheader(); w.writerows(rows)
-          print('ledger No.',target['No'])
+                  try:
+                      nums.append(int(float(r.get('No') or 0)))
+                  except ValueError:
+                      pass
+              target = {k: source.get(k, '') for k in fields}
+              target['No'] = str(max(nums, default=0) + 1)
+              rows.append(target)
+          target['WP投稿ID'] = os.environ.get('POST_ID', '')
+          target['WP投稿URL'] = os.environ.get('POST_LINK', '')
+          target['投稿ステータス'] = '公開済み'
+          target['最終更新日時'] = datetime.now(timezone(timedelta(hours=9))).strftime('%Y-%m-%d %H:%M:%S')
+          with ledger.open('w', encoding='utf-8-sig', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=fields)
+              w.writeheader()
+              w.writerows(rows)
+          print('ledger No.', target['No'])
           PY
           git add "$LEDGER_FILE"
-          if ! git diff --cached --quiet; then git commit -m "Record Certighost WordPress publication [skip ci]"; fi
+          if ! git diff --cached --quiet; then
+            git commit -m "Record Certighost WordPress publication [skip ci]"
+          fi
           git push origin main
 
       - name: Report success
@@ -146,14 +177,16 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           POST_ID: ${{ steps.verify.outputs.post_id }}
           POST_LINK: ${{ steps.verify.outputs.post_link }}
-        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Certighost publish succeeded. Post ID: $POST_ID  URL: $POST_LINK"
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Certighost publish succeeded. Post ID: $POST_ID  URL: $POST_LINK"
 
       - name: Report failure
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Certighost publish failed. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "Certighost publish failed. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Upload results
         if: always()
