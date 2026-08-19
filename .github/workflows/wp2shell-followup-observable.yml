@@ -29,11 +29,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "WP2Shell one-shot started. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "WP2Shell retry-safe run started. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -41,7 +42,7 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install dependencies and Japanese font
+      - name: Install dependencies and Noto Sans CJK
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends fonts-noto-cjk
@@ -49,60 +50,29 @@ jobs:
           pip install -r requirements.txt pillow
 
       - name: Generate and validate eyecatch
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          from PIL import Image, ImageDraw, ImageFont
+        run: python projects/cybernote-security-news/src/generate_wp2shell_followup_eyecatch.py
 
-          W, H = 1200, 800
-          BG, CYAN, GREEN, RED = "#0B1F33", "#22D3EE", "#34D399", "#F43F5E"
-          WHITE, MUTED, PANEL = "#F8FAFC", "#A9BDD0", "#102A43"
-          font_dir = Path("/usr/share/fonts/opentype/noto")
-          bolds = list(font_dir.glob("NotoSansCJK-Bold.ttc")) + list(font_dir.glob("NotoSansCJK-Black.ttc"))
-          regs = list(font_dir.glob("NotoSansCJK-Regular.ttc")) + list(font_dir.glob("NotoSansCJK-Medium.ttc"))
-          bold = str((bolds or regs)[0]); reg = str((regs or bolds)[0])
-          f_title = ImageFont.truetype(bold, 86); f_sub = ImageFont.truetype(bold, 44)
-          f_badge = ImageFont.truetype(bold, 28); f_small = ImageFont.truetype(reg, 23)
-          f_tiny = ImageFont.truetype(reg, 18)
-
-          img = Image.new("RGB", (W, H), BG); d = ImageDraw.Draw(img)
-          for x in range(0, W, 60): d.line((x, 0, x, H), fill="#0F2940")
-          for y in range(0, H, 60): d.line((0, y, W, y), fill="#0F2940")
-          d.text((62, 54), "WP2Shell 続報", font=f_title, fill=WHITE)
-          d.text((66, 162), "実悪用確認・攻撃試行を観測", font=f_sub, fill=CYAN)
-          d.rounded_rectangle((62, 235, 1138, 645), radius=28, fill=PANEL, outline="#1D4667", width=3)
-          shield = [(150,310),(218,282),(286,310),(278,404),(218,466),(158,404)]
-          d.polygon(shield, outline=GREEN, fill="#123A43"); d.line((183,370,209,397,258,340), fill=GREEN, width=13)
-          d.text((345,292), "WordPress REST API", font=f_badge, fill=WHITE)
-          d.text((345,339), "CVE-2026-63030 / CVE-2026-60137", font=f_small, fill=MUTED)
-          for i,w in enumerate((650,575,490,620,540)):
-              y=400+i*38
-              d.rounded_rectangle((345,y,345+w,y+17), radius=8, fill="#163A57")
-              d.rounded_rectangle((345,y,345+int(w*(0.58+i*0.055)),y+17), radius=8, fill=CYAN if i<3 else GREEN)
-          d.ellipse((1010,392,1040,422), fill=RED); d.line((930,408,1013,408), fill=RED, width=4)
-          d.text((930,438), "attack traffic", font=f_tiny, fill=MUTED)
-          for x1,x2,text,color in [(62,305,"CISA KEV",RED),(327,615,"実悪用確認",CYAN),(637,925,"国内でも観測",GREEN)]:
-              d.rounded_rectangle((x1,690,x2,748), radius=18, outline=color, width=3)
-              box=d.textbbox((0,0),text,font=f_badge); tw=box[2]-box[0]; th=box[3]-box[1]
-              d.text(((x1+x2-tw)/2,(690+748-th)/2-3),text,font=f_badge,fill=color)
-          d.text((957,704), "CyberNote", font=f_small, fill=MUTED)
-          out=Path("projects/cybernote-security-news/eyecatches/wordpress-wp2shell-followup-exploitation-observed.png")
-          out.parent.mkdir(parents=True, exist_ok=True); img.save(out, format="PNG", optimize=True)
-          check=Image.open(out); check.load(); assert check.size==(1200,800); assert check.mode=="RGB"
-          print(f"validated {out} size={check.size} mode={check.mode} bytes={out.stat().st_size}")
-          PY
-
-      - name: Commit eyecatch
+      - name: Commit eyecatch with rebase retry
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "$IMAGES_DIR/$SLUG.png"
           if git diff --cached --quiet; then
             echo "Eyecatch already present"
-          else
-            git commit -m "Add WP2Shell follow-up eyecatch [skip ci]"
-            git push
+            exit 0
           fi
+          git commit -m "Add WP2Shell follow-up eyecatch [skip ci]"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Eyecatch pushed"
+              exit 0
+            fi
+            echo "Push conflict; rebasing onto latest main (attempt $attempt)"
+            git fetch origin main
+            git rebase origin/main
+          done
+          echo "Eyecatch push failed after retries" >&2
+          exit 1
 
       - name: GEO quality gate
         run: |
@@ -142,14 +112,21 @@ jobs:
           python - <<'PY'
           import csv
           from pathlib import Path
-          files=sorted(Path("projects/cybernote-security-news/results").glob("results_*.csv"))
-          if not files: raise SystemExit("WordPress result CSV not found")
-          with files[-1].open(encoding="utf-8-sig",newline="") as f: rows=list(csv.DictReader(f))
-          rows=[r for r in rows if str(r.get("no","")).strip()=="9001"]
-          if not rows: raise SystemExit("No.9001 result not found")
-          row=rows[-1]; status=(row.get("status") or "").strip().lower()
-          print("status:",status); print("post_id:",row.get("post_id","")); print("post_link:",row.get("post_link",""))
-          if status not in {"posted","updated"}: raise SystemExit(row.get("error_content") or row.get("message") or status)
+          files = sorted(Path("projects/cybernote-security-news/results").glob("results_*.csv"))
+          if not files:
+              raise SystemExit("WordPress result CSV not found")
+          with files[-1].open(encoding="utf-8-sig", newline="") as f:
+              rows = list(csv.DictReader(f))
+          rows = [r for r in rows if str(r.get("no", "")).strip() == "9001"]
+          if not rows:
+              raise SystemExit("No.9001 result not found")
+          row = rows[-1]
+          status = (row.get("status") or "").strip().lower()
+          print("status:", status)
+          print("post_id:", row.get("post_id", ""))
+          print("post_link:", row.get("post_link", ""))
+          if status not in {"posted", "updated"}:
+              raise SystemExit(row.get("error_content") or row.get("message") or status)
           PY
 
       - name: Report final status
@@ -159,24 +136,28 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           JOB_STATUS: ${{ job.status }}
         run: |
-          POST_LINK=""
-          RESULT_STATUS=""
+          STATUS="none"
+          LINK="none"
+          ERROR="none"
           if ls "$RESULTS_DIR"/results_*.csv >/dev/null 2>&1; then
-            readarray -t VALUES < <(python - <<'PY'
+            mapfile -t V < <(python - <<'PY'
           import csv
           from pathlib import Path
-          files=sorted(Path("projects/cybernote-security-news/results").glob("results_*.csv"))
-          status=""; link=""
+          status='none'; link='none'; error='none'
+          files=sorted(Path('projects/cybernote-security-news/results').glob('results_*.csv'))
           if files:
-              with files[-1].open(encoding="utf-8-sig",newline="") as f: rows=list(csv.DictReader(f))
-              rows=[r for r in rows if str(r.get("no","")).strip()=="9001"]
+              with files[-1].open(encoding='utf-8-sig',newline='') as f: rows=list(csv.DictReader(f))
+              rows=[r for r in rows if str(r.get('no','')).strip()=='9001']
               if rows:
-                  status=(rows[-1].get("status") or "").strip(); link=(rows[-1].get("post_link") or "").strip()
-          print(status); print(link)
+                  row=rows[-1]
+                  status=(row.get('status') or 'none').strip()
+                  link=(row.get('post_link') or 'none').strip()
+                  error=(row.get('error_content') or row.get('message') or 'none').strip().replace('\n',' ')[:300]
+          print(status); print(link); print(error)
           PY
           )
-            RESULT_STATUS="${VALUES[0]:-}"
-            POST_LINK="${VALUES[1]:-}"
+            STATUS="${V[0]:-none}"
+            LINK="${V[1]:-none}"
+            ERROR="${V[2]:-none}"
           fi
-          BODY="WP2Shell one-shot finished: job=${JOB_STATUS}, result=${RESULT_STATUS:-none}, post=${POST_LINK:-none}. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "$BODY"
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "WP2Shell finished: job=$JOB_STATUS, result=$STATUS, post=$LINK, error=$ERROR. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
