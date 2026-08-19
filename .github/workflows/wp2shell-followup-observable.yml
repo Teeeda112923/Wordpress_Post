@@ -29,7 +29,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
-        run: gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "WP2Shell retry-safe run started. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+        run: |
+          gh issue comment "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --body "WP2Shell retry-safe run started. Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -50,7 +51,8 @@ jobs:
           pip install -r requirements.txt pillow
 
       - name: Generate and validate eyecatch
-        run: python projects/cybernote-security-news/src/generate_wp2shell_followup_eyecatch.py
+        run: |
+          python projects/cybernote-security-news/src/generate_wp2shell_followup_eyecatch.py
 
       - name: Commit eyecatch with rebase retry
         run: |
