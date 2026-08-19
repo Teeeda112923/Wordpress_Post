@@ -1,0 +1,201 @@
+name: WP2Shell Follow-up One Shot
+
+on:
+  push:
+    paths:
+      - ".github/workflows/wp2shell-followup-one-shot.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wp2shell-followup-one-shot
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      INPUT_FILE: projects/cybernote-security-news/data/wp2shell_followup_one_shot.csv
+      ARTICLES_DIR: projects/cybernote-security-news/articles
+      IMAGES_DIR: projects/cybernote-security-news/eyecatches
+      RESULTS_DIR: projects/cybernote-security-news/results
+      SLUG: wordpress-wp2shell-followup-exploitation-observed
+      TARGET_NO: "9001"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies and Japanese font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pillow
+
+      - name: Generate WP2Shell eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          width, height = 1200, 800
+          bg = "#0B1F33"
+          cyan = "#22D3EE"
+          green = "#34D399"
+          red = "#F43F5E"
+          white = "#F8FAFC"
+          muted = "#A9BDD0"
+          panel = "#102A43"
+
+          font_dir = Path("/usr/share/fonts/opentype/noto")
+          bold_candidates = list(font_dir.glob("NotoSansCJK-Bold.ttc")) + list(font_dir.glob("NotoSansCJK-Black.ttc"))
+          regular_candidates = list(font_dir.glob("NotoSansCJK-Regular.ttc")) + list(font_dir.glob("NotoSansCJK-Medium.ttc"))
+          bold_path = str((bold_candidates or regular_candidates)[0])
+          regular_path = str((regular_candidates or bold_candidates)[0])
+
+          title_font = ImageFont.truetype(bold_path, 86)
+          sub_font = ImageFont.truetype(bold_path, 44)
+          badge_font = ImageFont.truetype(bold_path, 28)
+          small_font = ImageFont.truetype(regular_path, 23)
+          tiny_font = ImageFont.truetype(regular_path, 18)
+
+          img = Image.new("RGB", (width, height), bg)
+          draw = ImageDraw.Draw(img)
+
+          # subtle grid
+          for x in range(0, width, 60):
+              draw.line((x, 0, x, height), fill="#0F2940", width=1)
+          for y in range(0, height, 60):
+              draw.line((0, y, width, y), fill="#0F2940", width=1)
+
+          # headline area
+          draw.text((62, 54), "WP2Shell 続報", font=title_font, fill=white)
+          draw.text((66, 162), "実悪用確認・攻撃試行を観測", font=sub_font, fill=cyan)
+          draw.rounded_rectangle((62, 235, 1138, 645), radius=28, fill=panel, outline="#1D4667", width=3)
+
+          # shield icon
+          shield = [(150, 310), (218, 282), (286, 310), (278, 404), (218, 466), (158, 404)]
+          draw.polygon(shield, outline=green, fill="#123A43")
+          draw.line((183, 370, 209, 397, 258, 340), fill=green, width=13)
+
+          # abstract attack paths / endpoint panel
+          draw.text((345, 292), "WordPress REST API", font=badge_font, fill=white)
+          draw.text((345, 339), "CVE-2026-63030 / CVE-2026-60137", font=small_font, fill=muted)
+          for i, w in enumerate((650, 575, 490, 620, 540)):
+              y = 400 + i * 38
+              draw.rounded_rectangle((345, y, 345 + w, y + 17), radius=8, fill="#163A57")
+              draw.rounded_rectangle((345, y, 345 + int(w * (0.58 + i * 0.055)), y + 17), radius=8, fill=cyan if i < 3 else green)
+          draw.ellipse((1010, 392, 1040, 422), fill=red)
+          draw.line((930, 408, 1013, 408), fill=red, width=4)
+          draw.text((930, 438), "attack traffic", font=tiny_font, fill=muted)
+
+          # badges
+          badges = [
+              (62, 690, 305, 748, "CISA KEV", red),
+              (327, 690, 615, 748, "実悪用確認", cyan),
+              (637, 690, 925, 748, "国内でも観測", green),
+          ]
+          for x1, y1, x2, y2, text, color in badges:
+              draw.rounded_rectangle((x1, y1, x2, y2), radius=18, outline=color, width=3)
+              bbox = draw.textbbox((0, 0), text, font=badge_font)
+              tw = bbox[2] - bbox[0]
+              th = bbox[3] - bbox[1]
+              draw.text(((x1 + x2 - tw) / 2, (y1 + y2 - th) / 2 - 3), text, font=badge_font, fill=color)
+
+          draw.text((957, 704), "CyberNote", font=small_font, fill=muted)
+
+          out = Path("projects/cybernote-security-news/eyecatches/wordpress-wp2shell-followup-exploitation-observed.png")
+          out.parent.mkdir(parents=True, exist_ok=True)
+          img.save(out, format="PNG", optimize=True)
+
+          check = Image.open(out)
+          check.load()
+          assert check.size == (1200, 800)
+          assert check.mode == "RGB"
+          print(f"generated: {out} {check.size} {check.mode} {out.stat().st_size} bytes")
+          PY
+
+      - name: Commit eyecatch to main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$IMAGES_DIR/$SLUG.png"
+          if git diff --cached --quiet; then
+            echo "Eyecatch already committed"
+          else
+            git commit -m "Add WP2Shell follow-up eyecatch [skip ci]"
+            git push
+          fi
+
+      - name: GEO article quality gate
+        run: |
+          python article_quality_check.py \
+            --input "$INPUT_FILE" \
+            --articles-dir "$ARTICLES_DIR" \
+            --results "$RESULTS_DIR/wp2shell_followup_quality.csv" \
+            --nos "$TARGET_NO" \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python wp_auto_post.py \
+            --input "$INPUT_FILE" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode create_only \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NO" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --skip-existing-check \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify WordPress result
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          files = sorted(Path("projects/cybernote-security-news/results").glob("results_*.csv"))
+          if not files:
+              raise SystemExit("WordPress result CSV not found")
+          with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+          rows = [r for r in rows if str(r.get("no", "")).strip() == "9001"]
+          if not rows:
+              raise SystemExit("No.9001 result not found")
+          row = rows[-1]
+          status = (row.get("status") or "").strip().lower()
+          print("status:", status)
+          print("post_id:", row.get("post_id", ""))
+          print("post_link:", row.get("post_link", ""))
+          if status not in {"posted", "updated"}:
+              raise SystemExit(row.get("error_content") or row.get("message") or f"unexpected status: {status}")
+          PY
+
+      - name: Upload result files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wp2shell-followup-results
+          path: projects/cybernote-security-news/results/*.csv
+          if-no-files-found: warn
+          retention-days: 7
