@@ -1342,9 +1342,12 @@ class WordPressClient:
             return data[0] if data else None
         if isinstance(data, dict) and data.get("id"):
             return data  # まれに単一オブジェクトを返すサイトに対応
-        # 想定外（エラーJSON等）の応答は既存判定をスキップし、処理を継続する
-        print(f"    [注意] 投稿検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
-        return None
+        # 検索失敗を「既存なし」と扱うと、リトライのたびに -2/-3 が
+        # 生成される。判定できないときはフェイルクローズで投稿も止める。
+        raise RuntimeError(
+            "投稿検索の応答が配列でないため、"
+            f"重複防止のため新規作成を中止します: {str(data)[:200]}"
+        )
 
     def find_post_by_title(self, title: str, status: str) -> dict[str, Any] | None:
         """タイトル完全一致で既存投稿を探す。
@@ -1362,9 +1365,10 @@ class WordPressClient:
         }
         data = self.request("GET", "posts", params=params)
         if not isinstance(data, list):
-            # 静かに失敗すると重複作成の原因が見えないため必ず表示する
-            print(f"    [注意] タイトル検索の応答が配列ではないため既存判定をスキップ: {str(data)[:200]}")
-            return None
+            raise RuntimeError(
+                "タイトル検索の応答が配列でないため、"
+                f"重複防止のため新規作成を中止します: {str(data)[:200]}"
+            )
         target = title.strip()
         for post in data:
             title_obj = post.get("title") or {}
@@ -1373,6 +1377,51 @@ class WordPressClient:
             if target in (raw, rendered):
                 return post
         return None
+
+    @staticmethod
+    def _post_search_text(post: dict[str, Any]) -> str:
+        values = [safe_str(post.get("slug"))]
+        # まとめ記事の本文にCVEが列挙されるのは正常なため、contentは対象外。
+        # 投稿そのものの主題を表す slug/title/excerpt だけで完全一致させる。
+        for field in ("title", "excerpt"):
+            value = post.get(field) or {}
+            if isinstance(value, dict):
+                values.extend([safe_str(value.get("raw")), safe_str(value.get("rendered"))])
+            else:
+                values.append(safe_str(value))
+        return "\n".join(values)
+
+    def find_posts_by_cves(self, cves: list[str]) -> list[dict[str, Any]]:
+        """CVE番号の完全一致を、全ての有効な投稿状態から探す。"""
+        normalized = sorted(
+            {
+                match.group(0).upper()
+                for value in cves
+                for match in re.finditer(r"(?<![A-Z0-9-])CVE-\d{4}-\d{4,}(?![A-Z0-9-])", value or "", re.I)
+            }
+        )
+        found: dict[int, dict[str, Any]] = {}
+        for cve in normalized:
+            params = {
+                "search": cve,
+                "status": "publish,future,draft,pending,private",
+                "context": "edit",
+                "per_page": 50,
+            }
+            data = self.request("GET", "posts", params=params)
+            if not isinstance(data, list):
+                raise RuntimeError(
+                    f"{cve} の既存投稿検索に失敗したため、"
+                    "重複防止のため新規作成を中止します"
+                )
+            exact = re.compile(rf"(?<![A-Z0-9-]){re.escape(cve)}(?![A-Z0-9-])", re.I)
+            for post in data:
+                if not isinstance(post, dict) or not exact.search(self._post_search_text(post)):
+                    continue
+                post_id = int(post.get("id") or 0)
+                if post_id:
+                    found[post_id] = post
+        return list(found.values())
 
     def find_posts_by_slug_variants(self, slug: str, max_suffix: int = 20) -> list[dict[str, Any]]:
         """slug と slug-2..slug-N を、ゴミ箱も含む全ステータスから探す（保守用）。"""
@@ -1909,6 +1958,15 @@ def main() -> int:
         raise RuntimeError(
             "--skip-existing-check は --write-mode create_only と併用してください。"
         )
+    if (
+        args.skip_existing_check
+        and not args.dry_run
+        and args.post_status != "draft"
+    ):
+        raise RuntimeError(
+            "--skip-existing-check は公開・保留投稿では使えません。"
+            "WordPress上の既存投稿を確認できない場合は、重複防止のため停止します。"
+        )
 
     wp: WordPressClient | None = None
     if args.check_images_only:
@@ -2149,6 +2207,34 @@ def main() -> int:
             # slug が空になりがちな下書き等はタイトル完全一致でフォールバック検索する
             if not existing and not args.slug_only_existing_check:
                 existing = wp.find_post_by_title(title, args.post_status)
+            # slug/title が変わっていても、同じCVEの別URLがあれば新規作成しない。
+            # 「続報」は同一CVEの独立記事を意図しているため、slug/titleの冪等性のみ適用する。
+            is_followup = "続報" in title or "followup" in slug.lower()
+            if not existing and not is_followup:
+                cve_values = [
+                    safe_str(cng_meta.get("_cng_cve")),
+                    kw,
+                    title,
+                    slug,
+                ]
+                cve_matches = wp.find_posts_by_cves(cve_values)
+                if len(cve_matches) > 1:
+                    ids = ", ".join(
+                        str(int(post.get("id") or 0)) for post in cve_matches
+                    )
+                    raise RuntimeError(
+                        "同一CVEの投稿がWordPress上に複数あります"
+                        f"（IDs: {ids}）。正規URLを決めるまで自動投稿を停止します。"
+                    )
+                if cve_matches:
+                    existing = cve_matches[0]
+                    existing_slug = safe_str(existing.get("slug"))
+                    if existing_slug:
+                        print(
+                            f"    同一CVEの既存投稿 id={existing.get('id')} を検出。"
+                            f"正規URLを維持するため slug='{existing_slug}' を使います。"
+                        )
+                        slug = existing_slug
         elif wp and args.skip_existing_check:
             print("    既存投稿確認を省略します（create_only / 管理簿で重複管理）")
         existence_known = wp is not None

@@ -1,7 +1,7 @@
 timezone: Asia/Tokyo
 source_lookback_hours: 24
 max_candidates_per_check: 10
-max_posts_per_day: 3
+max_posts_per_day: 1
 
 selection:
   min_cvss: 8.0

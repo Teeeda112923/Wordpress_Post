@@ -1,0 +1,42 @@
+name: CyberNote SEO Recovery Audit
+
+on:
+  schedule:
+    # 毎日 07:15 JST。記事公開ワークフローより前に非破壊監査を行う。
+    - cron: "15 22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependency
+        run: pip install "requests>=2.32.0"
+
+      - name: Audit published content
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL || 'https://www.cybernote.click' }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+        run: |
+          python projects/cybernote-security-news/src/seo_recovery_audit.py \
+            --output-dir projects/cybernote-security-news/results/seo-recovery
+          cat projects/cybernote-security-news/results/seo-recovery/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload audit report
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybernote-seo-recovery-audit-${{ github.run_id }}
+          path: projects/cybernote-security-news/results/seo-recovery/
+          retention-days: 30

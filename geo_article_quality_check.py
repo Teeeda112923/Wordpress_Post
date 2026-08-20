@@ -16,7 +16,34 @@ from urllib.parse import urlparse
 PRIMARY_DOMAINS = {
     "jvn.jp", "ipa.go.jp", "jpcert.or.jp", "nisc.go.jp", "npa.go.jp",
     "soumu.go.jp", "meti.go.jp", "ppc.go.jp", "nvd.nist.gov", "nist.gov",
-    "cisa.gov", "cve.org", "mitre.org", "first.org",
+    "cisa.gov", "fbi.gov", "cve.org", "mitre.org", "first.org", "kb.cert.org",
+    # 開発元・ベンダーの公式アドバイザリ/リリース情報
+    "microsoft.com", "googleblog.com", "google.com", "cisco.com", "wordpress.org",
+    "apache.org", "openjsf.org", "mitsubishielectric.com", "n-able.com",
+    "radiantviewer.com", "line.github.io", "cybozu.co.jp", "isc.org", "jetbrains.com",
+    "paloaltonetworks.com", "openvpn.net", "progress.com", "arista.com",
+    "thermofisher.com", "hitachi.co.jp", "ibm.com", "jp.sharp", "adobe.com",
+    "sogo.nu", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
+    "trendmicro.com",
+}
+
+# CVE/NVDは識別子・基礎評価の確認に重要だが、修正版や回避策の最終根拠は
+# ベンダー/調整機関のアドバイザリに求める。これらだけの記事は自動公開しない。
+REGISTRY_ONLY_DOMAINS = {"nvd.nist.gov", "cve.org", "mitre.org", "first.org"}
+
+IMPACT_PATTERNS = {
+    "リモートコード実行": (
+        r"リモートコード実行", r"任意コード実行", r"\bRCE\b", r"remote code execution"
+    ),
+    "情報漏えい": (
+        r"情報漏(?:えい|洩)", r"情報開示", r"information (?:disclosure|exposure|leak)"
+    ),
+    "サービス拒否": (r"サービス拒否", r"\bDoS\b", r"denial of service"),
+    "認証回避": (r"認証回避", r"authentication bypass", r"auth(?:entication)? bypass"),
+    "権限昇格": (r"権限昇格", r"privilege escalation"),
+    "XSS": (r"\bXSS\b", r"クロスサイトスクリプティング", r"cross[- ]site scripting"),
+    "SQLインジェクション": (r"SQLインジェクション", r"SQL injection"),
+    "パストラバーサル": (r"パストラバーサル", r"path traversal"),
 }
 
 PLUGIN_GENERATED_H2 = {"FAQ", "よくある質問", "参考情報", "参考・出典"}
@@ -155,6 +182,28 @@ def is_primary(url: str) -> bool:
         return True
     # 開発元がGitHub Security Advisoryを一次情報として公開する場合に対応する。
     return host == "github.com" and "/security/advisories/" in parsed.path
+
+
+def is_actionable_primary(url: str) -> bool:
+    """NVD/CVE登録だけでなく、修正・対応の根拠になる公式情報か。"""
+    if not is_primary(url):
+        return False
+    try:
+        host = urlparse(url).netloc.lower().split(":")[0]
+    except ValueError:
+        return False
+    return not any(
+        host == domain or host.endswith("." + domain)
+        for domain in REGISTRY_ONLY_DOMAINS
+    )
+
+
+def impact_labels(text: str) -> set[str]:
+    labels: set[str] = set()
+    for label, patterns in IMPACT_PATTERNS.items():
+        if any(re.search(pattern, text or "", flags=re.I) for pattern in patterns):
+            labels.add(label)
+    return labels
 
 
 def remove_reference_box(text: str) -> str:
@@ -302,6 +351,30 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             errors.append("フロントマターsourcesのtitle/url/publisherが未入力です")
     if not any(is_primary(url) for _, url, _ in sources):
         errors.append("フロントマターsourcesに一次情報ドメインがありません")
+    if not any(is_actionable_primary(url) for _, url, _ in sources):
+        errors.append(
+            "フロントマターsourcesにNVD/CVE登録以外のベンダー・調整機関の一次情報がありません"
+        )
+
+    # 公式出典タイトルが影響種別を1つに特定している場合、記事の主要部分が
+    # 別種別だけを断定していないかを検査する。本文全体では「情報漏えいは未確認」
+    # などの否定文も出るため、H1・導入・まとめに対象を限定する。
+    declared_impacts = impact_labels("\n".join(title for title, _, _ in sources))
+    critical_claims = "\n".join(
+        [
+            answer,
+            (re.search(r"(?m)^#\s+(.+?)\s*$", body) or ["", ""])[1],
+            intro_text(body),
+            summary_text(body),
+        ]
+    )
+    article_impacts = impact_labels(critical_claims)
+    if len(declared_impacts) == 1 and article_impacts and declared_impacts.isdisjoint(article_impacts):
+        expected = next(iter(declared_impacts))
+        actual = "、".join(sorted(article_impacts))
+        errors.append(
+            f"公式出典の影響種別「{expected}」と、記事主要部分の記述「{actual}」が一致しません"
+        )
 
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
