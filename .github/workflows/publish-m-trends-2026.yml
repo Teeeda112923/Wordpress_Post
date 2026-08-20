@@ -1,0 +1,73 @@
+name: Publish M-Trends 2026 Article
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "projects/cybernote-security-news/articles/m-trends-2026-cyberattack-22-seconds.md"
+      - "projects/cybernote-security-news/eyecatches/m-trends-2026-cyberattack-22-seconds.png"
+      - ".github/workflows/publish-m-trends-2026.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create one-off ledger
+        run: |
+          cat > /tmp/mtrends-ledger.csv <<'CSV'
+          No,収集日,公開予定日,記事分類,指定KW,話題性スコア,記事タイトル案,記事タイトル,スラッグ,メタディスクリプション,WPカテゴリ,タグ案,記事ファイル,画像ファイル名,主な出典URL,内部リンクURL,目標文字数,生成ステータス,レビュー判定,公開停止,WP投稿ID,WP投稿URL,投稿ステータス,最終更新日時,エラー内容,候補ID
+          55,2026-08-20,2026-08-20,サイバー攻撃動向,M-Trends 2026,98,M-Trends 2026で判明「22秒」で攻撃者に引き継がれる侵入｜企業が見直すべき対策,M-Trends 2026で判明「22秒」で攻撃者に引き継がれる侵入｜企業が見直すべき対策,m-trends-2026-cyberattack-22-seconds,M-Trends 2026の22秒という統計から、サイバー犯罪の分業化と企業に求められる検知・初動・復旧対策を分かりやすく解説します。,サイバーセキュリティ,"M-Trends 2026,Mandiant,ランサムウェア,サイバー攻撃",projects/cybernote-security-news/articles/m-trends-2026-cyberattack-22-seconds.md,projects/cybernote-security-news/eyecatches/m-trends-2026-cyberattack-22-seconds.png,https://cloud.google.com/blog/topics/threat-intelligence/m-trends-2026,https://www.cybernote.click/2026/07/02/%E3%82%B5%E3%82%A4%E3%83%90%E3%83%BC%E6%94%BB%E6%92%83%E3%81%AE%E9%80%9F%E5%BA%A6%E3%81%8C4%E5%80%8D%E3%81%AB%E5%8A%A0%E9%80%9F%EF%BD%9Cai%E3%81%8C%E5%A4%89%E3%81%88%E3%81%9F%E6%94%BB%E6%92%83/,1500,生成済み,未確認,,,,,,,mtrends-20260820
+          CSV
+          sed -i 's/^          //' /tmp/mtrends-ledger.csv
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py \
+            --input /tmp/mtrends-ledger.csv \
+            --articles-dir projects/cybernote-security-news/articles \
+            --results projects/cybernote-security-news/results/mtrends_quality.csv \
+            --nos "55" \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python wp_auto_post.py \
+            --input /tmp/mtrends-ledger.csv \
+            --articles-dir projects/cybernote-security-news/articles \
+            --images-dir projects/cybernote-security-news/eyecatches \
+            --post-status publish \
+            --write-mode create_only \
+            --category "サイバーセキュリティ" \
+            --nos "55" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --skip-existing-check \
+            --output-dir projects/cybernote-security-news/results
