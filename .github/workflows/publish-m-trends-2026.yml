@@ -63,11 +63,10 @@ jobs:
             --articles-dir projects/cybernote-security-news/articles \
             --images-dir projects/cybernote-security-news/eyecatches \
             --post-status publish \
-            --write-mode create_only \
+            --write-mode upsert \
             --category "サイバーセキュリティ" \
             --nos "55" \
             --limit 1 \
             --skip-auth-check \
             --skip-internal-link-resolution \
-            --skip-existing-check \
             --output-dir projects/cybernote-security-news/results

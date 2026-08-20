@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 import tempfile
+import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
 import geo_article_quality_check as quality
 import geo_meta
 from generate_eyecatches import validate_png_bytes
-from wp_auto_post import check_eyecatch
+from wp_auto_post import WordPressClient, check_eyecatch
+
+SRC_DIR = Path(__file__).parents[1] / "src"
+sys.path.insert(0, str(SRC_DIR))
+from seo_recovery_audit import daily_volume, duplicate_groups  # noqa: E402
 
 
-def valid_front(*, faq_count: int = 2, source_url: str = "https://nvd.nist.gov/vuln/detail/CVE-2026-12345") -> str:
+def valid_front(*, faq_count: int = 2, source_url: str = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-12345") -> str:
     answer_text = "回" * 60
     conclusion = "結" * 39 + "。"
     faq = "\n".join(
@@ -99,6 +105,23 @@ class QualityRuleTests(unittest.TestCase):
         )
         self.assertIn("フロントマターsourcesに一次情報ドメインがありません", errors)
 
+        errors, _ = quality.geo_errors(
+            valid_front(source_url="https://nvd.nist.gov/vuln/detail/CVE-2026-12345"),
+            valid_body(),
+        )
+        self.assertTrue(any("NVD/CVE登録以外" in error for error in errors))
+
+    def test_official_impact_type_must_match_critical_claims(self) -> None:
+        front = valid_front().replace(
+            'title: "一次情報"',
+            'title: "Microsoft Remote Code Execution Vulnerability"',
+        )
+        inconsistent = valid_body().replace(
+            "# テスト記事", "# 情報漏えいの脆弱性"
+        ).replace("導" * 260, "情報漏えい。" * 44).replace("総" * 270, "情報漏えい。" * 44)
+        errors, _ = quality.geo_errors(front, inconsistent)
+        self.assertTrue(any("公式出典の影響種別" in error for error in errors))
+
     def test_core_length_has_minimum_and_hard_maximum(self) -> None:
         short = valid_body().replace("詳" * 300, "詳" * 5).replace("補" * 300, "補" * 5)
         errors, _ = quality.geo_errors(valid_front(), short)
@@ -169,6 +192,87 @@ class CyberNoteImageRuleTests(unittest.TestCase):
             self.assertIn("PNG署名", result["error_content"])
             with self.assertRaisesRegex(RuntimeError, "PNG署名"):
                 validate_png_bytes(broken.read_bytes())
+
+
+class WordPressDeduplicationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = WordPressClient("https://www.cybernote.click", "tester", "secret")
+
+    def test_cve_search_uses_exact_token_and_deduplicates_ids(self) -> None:
+        payload = [
+            {
+                "id": 10,
+                "slug": "first",
+                "title": {"rendered": "CVE-2026-12345 の対策"},
+                "content": {"rendered": "CVE-2026-67890 も含みます"},
+            },
+            {
+                "id": 11,
+                "slug": "different",
+                "title": {"rendered": "CVE-2026-123450"},
+            },
+        ]
+        with patch.object(self.client, "request", return_value=payload) as request:
+            matches = self.client.find_posts_by_cves(
+                ["CVE-2026-12345", "CVE-2026-67890"]
+            )
+        self.assertEqual([10], [post["id"] for post in matches])
+        self.assertEqual(2, request.call_count)
+
+    def test_unexpected_existing_search_response_fails_closed(self) -> None:
+        with patch.object(self.client, "request", return_value={"code": "blocked"}):
+            with self.assertRaisesRegex(RuntimeError, "新規作成を中止"):
+                self.client.find_post_by_slug("cve-2026-12345", "publish")
+
+
+class SeoRecoveryAuditTests(unittest.TestCase):
+    def test_duplicate_cve_title_and_wordpress_suffix_are_reported(self) -> None:
+        posts = [
+            {
+                "id": 1,
+                "slug": "product-cve-2026-12345",
+                "title": {"rendered": "【重要】CVE-2026-12345 の対策"},
+                "excerpt": {"rendered": ""},
+                "date": "2026-08-01T00:00:00",
+            },
+            {
+                "id": 2,
+                "slug": "product-cve-2026-12345-2",
+                "title": {"rendered": "CVE-2026-12345 の対策"},
+                "excerpt": {"rendered": ""},
+                "date": "2026-08-02T00:00:00",
+            },
+            {
+                "id": 3,
+                "slug": "m-trends-2026",
+                "title": {"rendered": "M-Trends 2026"},
+                "date": "2026-08-03T00:00:00",
+            },
+        ]
+        rows = duplicate_groups(posts)
+        kinds = {(row["group_type"], row["group_key"]) for row in rows}
+        self.assertIn(("cve", "CVE-2026-12345"), kinds)
+        self.assertIn(("title", "cve202612345の対策"), kinds)
+        self.assertIn(("slug_suffix", "product-cve-2026-12345"), kinds)
+        self.assertNotIn(("slug_suffix", "m-trends"), kinds)
+        canonical_ids = {
+            row["canonical_candidate_id"]
+            for row in rows
+            if row["group_type"] == "slug_suffix"
+        }
+        self.assertEqual({1}, canonical_ids)
+
+    def test_daily_volume_marks_days_over_recovery_limit(self) -> None:
+        rows = daily_volume(
+            [
+                {"date": "2026-08-01T01:00:00"},
+                {"date": "2026-08-01T02:00:00"},
+                {"date": "2026-08-02T01:00:00"},
+            ]
+        )
+        by_date = {row["date"]: row for row in rows}
+        self.assertTrue(by_date["2026-08-01"]["over_recovery_limit"])
+        self.assertFalse(by_date["2026-08-02"]["over_recovery_limit"])
 
 
 if __name__ == "__main__":
