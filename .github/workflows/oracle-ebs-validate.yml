@@ -1,0 +1,108 @@
+name: Validate Oracle EBS Article Once
+
+on:
+  push:
+    branches:
+      - automation/oracle-ebs-20260821
+    paths:
+      - .github/workflows/oracle-ebs-validate.yml
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: automation/oracle-ebs-20260821
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-noto-cjk
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Build temporary ledger
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+          src=Path('projects/cybernote-security-news/data/news_ledger.csv')
+          dst=Path('/tmp/news_ledger.csv')
+          with src.open(encoding='utf-8-sig', newline='') as f:
+              reader=csv.DictReader(f)
+              fields=reader.fieldnames or []
+          row={k:'' for k in fields}
+          row.update({
+              'No':'57','収集日':'2026-08-21','公開予定日':'2026-08-21',
+              '記事分類':'ERP脆弱性','指定KW':'Oracle E-Business Suite','話題性スコア':'95',
+              '記事タイトル案':'Oracle E-Business Suiteの8月CSPU、CVSS 9.8の認証不要脆弱性2件を修正',
+              '記事タイトル':'【重要】Oracle E-Business SuiteにCVSS 9.8、8月CSPUを適用',
+              'スラッグ':'oracle-e-business-suite-cve-2026-60782-70926-cspu-august-2026',
+              'メタディスクリプション':'Oracle E-Business Suiteの2026年8月CSPUを解説。CVE-2026-60782とCVE-2026-70926の影響、対象版、対策をまとめます。',
+              'WPカテゴリ':'サイバーセキュリティ',
+              'タグ案':'Oracle E-Business Suite,CVE-2026-60782,CVE-2026-70926,CSPU,脆弱性',
+              '記事ファイル':'projects/cybernote-security-news/articles/oracle-e-business-suite-cve-2026-60782-70926-cspu-august-2026.md',
+              '画像ファイル名':'projects/cybernote-security-news/eyecatches/oracle-e-business-suite-cve-2026-60782-70926-cspu-august-2026.png',
+              '主な出典URL':'https://www.oracle.com/security-alerts/cspuaug2026.html',
+              '内部リンクURL':'https://www.cybernote.click/2026/07/28/oracle-java-security-update-july-2026/',
+              '目標文字数':'1500','生成ステータス':'生成済み','レビュー判定':'未確認','公開停止':'',
+              '候補ID':'20260821-002'
+          })
+          with dst.open('w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields,lineterminator='\n'); w.writeheader(); w.writerow(row)
+          PY
+      - name: Show checker help
+        run: |
+          python article_quality_check.py --help
+          python geo_article_quality_check.py --help
+      - name: Run article quality check
+        run: |
+          mkdir -p /tmp/results
+          python article_quality_check.py --input /tmp/news_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/results/article.csv --nos 57 --include-unstarted --mode geo --fail-on-error
+          cat /tmp/results/article.csv
+      - name: Run GEO quality check
+        run: |
+          python geo_article_quality_check.py --input /tmp/news_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/results/geo.csv --nos 57 --include-unstarted --mode geo --fail-on-error
+          cat /tmp/results/geo.csv
+      - name: Generate and validate eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+          out=Path('projects/cybernote-security-news/eyecatches/oracle-e-business-suite-cve-2026-60782-70926-cspu-august-2026.png')
+          out.parent.mkdir(parents=True,exist_ok=True)
+          W,H=1200,800
+          img=Image.new('RGB',(W,H),'#0B1F33'); d=ImageDraw.Draw(img)
+          fb='/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'; fr='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          fonts=[ImageFont.truetype(fb,34),ImageFont.truetype(fb,62),ImageFont.truetype(fb,44),ImageFont.truetype(fb,40),ImageFont.truetype(fr,25)]
+          fl,ft,fc,fa,fs=fonts
+          for x in range(80,W,120): d.line((x,60,x,H-60),fill='#12324D',width=1)
+          for y in range(80,H,100): d.line((60,y,W-60,y),fill='#12324D',width=1)
+          d.rounded_rectangle((72,62,350,120),radius=16,fill='#F43F5E')
+          d.text((94,69),'SECURITY UPDATE',font=fl,fill='white')
+          d.text((74,180),'Oracle E-Business Suite',font=ft,fill='white')
+          d.text((76,290),'CVE-2026-60782',font=fc,fill='#22D3EE')
+          d.text((76,352),'CVE-2026-70926',font=fc,fill='#22D3EE')
+          d.rounded_rectangle((72,500,900,610),radius=24,fill='#102B45',outline='#34D399',width=4)
+          d.text((104,530),'対処：8月CSPUを適用',font=fa,fill='#34D399')
+          d.text((76,690),'CyberNote  |  Security News',font=fs,fill='#A9C4D8')
+          img.save(out,'PNG',optimize=True)
+          if out.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n': raise SystemExit('bad PNG signature')
+          with Image.open(out) as im:
+              im.load()
+              if im.size != (1200,800): raise SystemExit(f'bad size {im.size}')
+              if im.mode != 'RGB': raise SystemExit(f'bad mode {im.mode}')
+          print(f'PNG_OK size={out.stat().st_size} dimensions=1200x800 mode=RGB')
+          PY
+      - name: Commit validated PNG
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- projects/cybernote-security-news/eyecatches/oracle-e-business-suite-cve-2026-60782-70926-cspu-august-2026.png
+          git commit -m "Add validated Oracle EBS eyecatch"
+          git push origin HEAD:automation/oracle-ebs-20260821
