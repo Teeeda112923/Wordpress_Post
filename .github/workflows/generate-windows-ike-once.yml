@@ -1,0 +1,103 @@
+name: Generate Windows IKE Article Once
+
+on:
+  push:
+    paths:
+      - '.github/workflows/generate-windows-ike-once.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-generate-windows-ike-once
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-noto-cjk
+          python -m pip install --upgrade pip >/dev/null
+          pip install pillow >/dev/null
+
+      - name: Verify eligibility and materialize draft
+        id: prep
+        env:
+          ARTICLE_B64: "LS0tCmFuc3dlcjogIuOBiuOBruWFpeaEj+OBp+OBq+OBmeOAggo="
+        run: |
+          set -euo pipefail
+          ARTICLE='projects/cybernote-security-news/articles/windows-ike-cve-2026-33824-kev-rce.md'
+          IMAGE='projects/cybernote-security-news/eyecatches/windows-ike-cve-2026-33824-kev-rce.png'
+          LEDGER='projects/cybernote-security-news/data/news_ledger.csv'
+          CANDIDATES='projects/cybernote-security-news/data/news_candidates.csv'
+          TODAY='2026-08-24'
+          git pull --ff-only origin main
+          test ! -e "$ARTICLE"
+          test ! -e "$IMAGE"
+          grep -q '20260824-001' "$CANDIDATES"
+          ! grep -q 'CVE-2026-33824' "$LEDGER"
+          if grep -R -q 'CVE-2026-33824' projects/cybernote-security-news/articles; then
+            echo 'Duplicate CVE article exists' >&2
+            exit 1
+          fi
+          python - <<'PY2'
+          import csv
+          from pathlib import Path
+          ledger=Path('projects/cybernote-security-news/data/news_ledger.csv')
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              rows=list(csv.DictReader(f))
+          today='2026-08-24'
+          daily=sum(1 for r in rows if (r.get('収集日') or '').strip()==today and (r.get('生成ステータス') or '').strip()=='生成済み')
+          max_no=max([int(r['No']) for r in rows if (r.get('No') or '').isdigit()] or [0])
+          print(f'daily_count_before={daily}')
+          print(f'max_no_before={max_no}')
+          if daily >= 4:
+              raise SystemExit('Daily generation limit reached')
+          Path('/tmp/no.txt').write_text(str(max_no+1))
+          PY2
+          echo "$ARTICLE_B64" | base64 -d > "$ARTICLE"
+          echo "article=$ARTICLE" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "no=$(cat /tmp/no.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and validate PNG
+        run: |
+          python - <<'PY'
+          from PIL import Image, ImageDraw, ImageFont
+          from pathlib import Path
+          out=Path('${{ steps.prep.outputs.image }}')
+          W,H=1200,800
+          img=Image.new('RGB',(W,H),'#0B1F33')
+          d=ImageDraw.Draw(img)
+          reg='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          bold='/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+          f_title=ImageFont.truetype(bold,68)
+          f_cve=ImageFont.truetype(bold,58)
+          f_sub=ImageFont.truetype(reg,34)
+          f_badge=ImageFont.truetype(bold,30)
+          f_action=ImageFont.truetype(bold,40)
+          d.rounded_rectangle((70,70,1130,730),radius=32,outline='#22D3EE',width=3)
+          d.rounded_rectangle((85,90,315,145),radius=16,fill='#F43F5E')
+          d.text((115,101),'実悪用確認・KEV',font=f_badge,fill='white')
+          d.text((95,205),'Windows IKE',font=f_title,fill='white')
+          d.text((95,300),'CVE-2026-33824',font=f_cve,fill='#22D3EE')
+          d.text((98,385),'CVSS 9.8  |  認証不要RCE',font=f_sub,fill='#D6E8F5')
+          d.line((95,455,1105,455),fill='#334E68',width=2)
+          d.text((95,510),'対処：Windowsを最新の累積更新へ',font=f_action,fill='#34D399')
+          d.text((97,590),'IKE / IPsec利用環境は外部到達性とログも確認',font=f_sub,fill='#D6E8F5')
+          img.save(out,'PNG',optimize=True)
+          raw=out.read_bytes()
+          assert raw[:8] == b'\x89PNG\r\n\x1a\n'
+          with Image.open(out) as im:
+              im.load()
+              assert im.size==(1200,800)
+              assert im.mode=='RGB'
+          print(f'png_signature=OK size={out.stat().st_size} dimensions=1200x800 mode=RGB decode=OK')
+          PY
