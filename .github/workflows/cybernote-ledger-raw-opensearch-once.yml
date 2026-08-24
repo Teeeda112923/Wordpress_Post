@@ -1,0 +1,65 @@
+name: CyberNote Ledger Raw OpenSearch Once
+on:
+  push:
+    branches:
+      - cybernote-ledger-raw-20260825-0812
+permissions:
+  contents: write
+jobs:
+  ledger:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cybernote-ledger-raw-20260825-0812
+          fetch-depth: 0
+      - name: Append No.65 preserving existing bytes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import csv, io
+          p=Path('projects/cybernote-security-news/data/news_ledger.csv')
+          old=p.read_bytes()
+          text=old.decode('utf-8-sig')
+          rows=list(csv.DictReader(io.StringIO(text)))
+          assert not any(str(x.get('No','')).strip()=='65' for x in rows)
+          nl=b'\r\n' if b'\r\n' in old else b'\n'
+          if old.endswith(b'\r\n'):
+              prefix=old
+          elif old.endswith(b'\n'):
+              prefix=old
+          else:
+              prefix=old+nl
+          fields=list(csv.DictReader(io.StringIO(text)).fieldnames or [])
+          row={k:'' for k in fields}
+          row.update({
+            'No':'65','収集日':'2026-08-25','公開予定日':'2026-08-25','記事分類':'クラウドサービス脆弱性','指定KW':'Amazon OpenSearch Service','話題性スコア':'95','記事タイトル案':'Amazon OpenSearch ServiceにCVSS 8.7の保存型XSS、サービス更新を確認','記事タイトル':'【重要】Amazon OpenSearchにCVSS 8.7、サービス更新を確認','スラッグ':'amazon-opensearch-cve-2026-77811-stored-xss','メタディスクリプション':'Amazon OpenSearch ServiceのCVE-2026-77811を解説。CVSS 8.7、影響条件、サービス更新と権限確認をまとめます。','WPカテゴリ':'サイバーセキュリティ','タグ案':'Amazon OpenSearch Service,CVE-2026-77811,OpenSearch,XSS,AWS','記事ファイル':'projects/cybernote-security-news/articles/amazon-opensearch-cve-2026-77811-stored-xss.md','画像ファイル名':'projects/cybernote-security-news/eyecatches/amazon-opensearch-cve-2026-77811-stored-xss.png','主な出典URL':'https://aws.amazon.com/security/security-bulletins/2026-088-aws/','内部リンクURL':'https://www.cybernote.click/2026/07/02/aws%E3%81%8C%E9%80%B2%E3%82%81%E3%82%8B%E3%82%AF%E3%83%A9%E3%82%A6%E3%83%89%E3%82%BB%E3%82%AD%E3%83%A5%E3%83%AA%E3%83%86%E3%82%A3%E3%81%AE%E5%8A%B9%E7%8E%87%E5%8C%96%E3%81%A8%E3%81%AF%EF%BC%9F2025/','目標文字数':'1500','生成ステータス':'生成済み','レビュー判定':'未確認','公開停止':'','候補ID':'20260825-001'})
+          sio=io.StringIO(newline='')
+          w=csv.DictWriter(sio,fieldnames=fields,lineterminator='\n')
+          w.writerow(row)
+          line=sio.getvalue().encode('utf-8').rstrip(b'\n')+nl
+          p.write_bytes(prefix+line)
+          new=p.read_bytes()
+          assert new[:len(old)]==old
+          assert new[len(old):] == line if old.endswith((b'\n',b'\r\n')) else new[len(old):] == nl+line
+          print('old_bytes',len(old),'new_bytes',len(new),'newline',repr(nl),'appended_bytes',len(new)-len(old))
+          PY
+      - name: Verify only one CSV row added
+        run: |
+          git diff --numstat HEAD -- projects/cybernote-security-news/data/news_ledger.csv
+          test "$(git diff --numstat HEAD -- projects/cybernote-security-news/data/news_ledger.csv | awk '{print $1}')" = "1"
+          test "$(git diff --numstat HEAD -- projects/cybernote-security-news/data/news_ledger.csv | awk '{print $2}')" = "0"
+          tail -n 1 projects/cybernote-security-news/data/news_ledger.csv
+      - name: Commit ledger only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- projects/cybernote-security-news/data/news_ledger.csv
+          git commit -m 'Stage Amazon OpenSearch ledger row raw'
+          git push origin HEAD:cybernote-ledger-raw-20260825-0812
+      - name: Verify ledger blob
+        run: |
+          git fetch origin cybernote-ledger-raw-20260825-0812
+          P=projects/cybernote-security-news/data/news_ledger.csv
+          echo "LEDGER_BLOB_SHA=$(git ls-tree origin/cybernote-ledger-raw-20260825-0812 "$P" | awk '{print $3}')"
+          git show origin/cybernote-ledger-raw-20260825-0812:"$P" | tail -n 1
