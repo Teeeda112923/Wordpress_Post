@@ -1,0 +1,72 @@
+name: Regenerate Chrome 152 Eyecatch Once
+
+on:
+  push:
+    paths:
+      - '.github/workflows/fix-chrome152-eyecatch-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install 'Pillow>=10.3.0'
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-noto-cjk
+      - name: Generate and verify PNG
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+          import hashlib
+
+          path = Path('projects/cybernote-security-news/eyecatches/google-chrome-152-cve-2026-79282-critical-update.png')
+          W, H = 1200, 800
+          img = Image.new('RGB', (W, H), (11, 31, 51))
+          draw = ImageDraw.Draw(img)
+          font = '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+          regular = '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+
+          draw.rectangle((70, 70, 1130, 730), outline=(34, 211, 238), width=3)
+          items = [
+              ((110, 130), 'SECURITY UPDATE', 28, (52, 211, 153), font),
+              ((110, 195), 'Google Chrome 152', 64, (245, 248, 250), font),
+              ((110, 320), 'CVE-2026-79282', 54, (34, 211, 238), font),
+              ((110, 430), 'Critical / CVSS 9.6', 40, (245, 248, 250), font),
+              ((110, 570), '対処：Chromeを最新版へ更新', 44, (245, 248, 250), font),
+              ((110, 650), '更新後はブラウザーを再起動し、バージョンを確認', 28, (190, 205, 218), regular),
+          ]
+          for pos, text, size, color, fp in items:
+              f = ImageFont.truetype(fp, size)
+              bbox = draw.textbbox(pos, text, font=f)
+              if not (bbox[0] >= 0 and bbox[1] >= 0 and bbox[2] <= W and bbox[3] <= H):
+                  raise RuntimeError(f'text clipping: {text} {bbox}')
+              draw.text(pos, text, font=f, fill=color)
+
+          path.parent.mkdir(parents=True, exist_ok=True)
+          img.save(path, 'PNG', optimize=True)
+          raw = path.read_bytes()
+          if raw[:8] != b'\x89PNG\r\n\x1a\n':
+              raise RuntimeError('invalid PNG signature')
+          with Image.open(path) as check:
+              check.load()
+              if check.size != (1200, 800) or check.mode != 'RGB' or check.format != 'PNG':
+                  raise RuntimeError(f'invalid image: {check.format} {check.size} {check.mode}')
+          sha = hashlib.sha1(f'blob {len(raw)}\0'.encode() + raw).hexdigest()
+          print(f'PNG_OK size={len(raw)} sha={sha} dimensions=1200x800 mode=RGB')
+          PY
+      - name: Commit image only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- projects/cybernote-security-news/eyecatches/google-chrome-152-cve-2026-79282-critical-update.png
+          git commit -m 'Fix Chrome 152 eyecatch PNG'
+          git push
