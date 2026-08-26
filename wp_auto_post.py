@@ -58,7 +58,7 @@ except Exception:
 COLUMN_CANDIDATES: dict[str, list[str]] = {
     "no": ["No", "番号", "記事No", "ID"],
     "kw": ["指定KW", "管理KW", "KW", "キーワード", "親KW"],
-        "title": ["記事タイトル", "記事タイトル案", "タイトル", "H1", "title"],
+    "title": ["記事タイトル", "記事タイトル案", "タイトル", "H1", "title"],
     "slug": ["スラッグ", "slug", "Slug"],
     "meta": ["メタディスクリプション案", "メタディスクリプション", "description", "概要"],
     "category": ["WPカテゴリ", "カテゴリ", "記事カテゴリ", "category"],
