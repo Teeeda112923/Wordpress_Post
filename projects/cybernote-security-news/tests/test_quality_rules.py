@@ -11,7 +11,7 @@ from PIL import Image
 import geo_article_quality_check as quality
 import geo_meta
 from generate_eyecatches import validate_png_bytes
-from wp_auto_post import WordPressClient, check_eyecatch
+from wp_auto_post import COLUMN_CANDIDATES, WordPressClient, check_eyecatch, find_col
 
 SRC_DIR = Path(__file__).parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
@@ -197,6 +197,13 @@ class CyberNoteImageRuleTests(unittest.TestCase):
 class WordPressDeduplicationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = WordPressClient("https://www.cybernote.click", "tester", "secret")
+
+    def test_final_article_title_takes_priority_over_title_draft(self) -> None:
+        columns = ["記事タイトル案", "記事タイトル"]
+        self.assertEqual(
+            "記事タイトル",
+            find_col(columns, COLUMN_CANDIDATES["title"]),
+        )
 
     def test_cve_search_uses_exact_token_and_deduplicates_ids(self) -> None:
         payload = [
