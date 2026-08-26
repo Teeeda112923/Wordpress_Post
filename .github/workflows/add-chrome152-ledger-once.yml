@@ -1,0 +1,52 @@
+name: Append Chrome 152 Ledger Once
+
+on:
+  push:
+    paths:
+      - '.github/workflows/add-chrome152-ledger-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  append:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Append No.68 only
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          path = Path('projects/cybernote-security-news/data/news_ledger.csv')
+          with path.open(encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          if any(str(r.get('No','')).strip() == '68' for r in rows):
+              raise SystemExit('No.68 already exists; aborting without change')
+          if any('CVE-2026-79282' in ((r.get('記事タイトル') or '') + (r.get('スラッグ') or '') + (r.get('メタディスクリプション') or '') + (r.get('タグ案') or '')) for r in rows):
+              raise SystemExit('CVE-2026-79282 already exists in ledger; aborting without change')
+          row = [
+              '68','2026-08-26','2026-08-26','ブラウザー脆弱性','Google Chrome','100',
+              'Google Chrome 152にCritical 10件、CVE-2026-79282はCVSS 9.6',
+              '【重要】Google Chrome 152にCVSS 9.6、最新版へ更新を',
+              'google-chrome-152-cve-2026-79282-critical-update',
+              'Google Chrome 152のCVE-2026-79282を解説。CVSS 9.6、影響、最新版への更新と確認事項をまとめます。',
+              'サイバーセキュリティ','Google Chrome,CVE-2026-79282,Chrome 152,Use After Free,セキュリティ更新',
+              'projects/cybernote-security-news/articles/google-chrome-152-cve-2026-79282-critical-update.md',
+              'projects/cybernote-security-news/eyecatches/google-chrome-152-cve-2026-79282-critical-update.png',
+              'https://chromereleases.googleblog.com/2026/08/stable-channel-update-for-desktop_0256176589.html',
+              'https://www.cybernote.click/2026/08/20/google-chrome-151-cve-2026-76017-76023-update/',
+              '1500','生成済み','未確認','','','','','','','20260826-002'
+          ]
+          with path.open('a', encoding='utf-8', newline='') as f:
+              csv.writer(f, lineterminator='\n').writerow(row)
+          print('LEDGER_OK No.68 appended')
+          PY
+      - name: Commit ledger only
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- projects/cybernote-security-news/data/news_ledger.csv
+          git commit -m 'Add Chrome 152 article to ledger'
+          git push
