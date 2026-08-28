@@ -1,0 +1,70 @@
+name: Temporary Ceph Final Verification
+
+on:
+  push:
+    paths:
+      - ".github/workflows/tmp-ceph-final-verify.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install "Pillow>=10.3.0"
+      - name: Show checker help
+        run: |
+          python article_quality_check.py --help
+          python geo_article_quality_check.py --help
+      - name: Run article quality checker
+        run: |
+          python article_quality_check.py \
+            --input projects/cybernote-security-news/data/news_ledger.csv \
+            --articles-dir projects/cybernote-security-news/articles \
+            --results /tmp/article_quality_results.csv \
+            --nos 77 \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+      - name: Run GEO article quality checker
+        run: |
+          python geo_article_quality_check.py \
+            --input projects/cybernote-security-news/data/news_ledger.csv \
+            --articles-dir projects/cybernote-security-news/articles \
+            --results /tmp/geo_article_quality_results.csv \
+            --nos 77 \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+      - name: Validate stored PNG
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import hashlib
+          p = Path('projects/cybernote-security-news/eyecatches/ceph-cve-2026-50152-monitor-config-key-secrets.png')
+          raw = p.read_bytes()
+          assert raw[:8] == b'\x89PNG\r\n\x1a\n'
+          with Image.open(p) as im:
+              im.load()
+              assert im.format == 'PNG'
+              assert im.size == (1200, 800)
+              assert im.mode == 'RGB'
+          sha = hashlib.sha1(f'blob {len(raw)}\0'.encode() + raw).hexdigest()
+          print(f'PNG_OK bytes={len(raw)} git_blob_sha={sha} size=1200x800 mode=RGB')
+          PY
+      - name: Remove temporary verifier
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/tmp-ceph-final-verify.yml
+          git commit -m "Remove temporary Ceph verifier"
+          git push
