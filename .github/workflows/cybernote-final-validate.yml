@@ -1,0 +1,52 @@
+name: CyberNote Final Validate
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install pillow
+      - name: Prepare temporary ledger
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          Path('/tmp/e.csv').write_text('No,記事タイトル,スラッグ,生成ステータス\n80,【重要】Microsoft EdgeにCVSS 8.8のRCE、最新版へ更新を,microsoft-edge-cve-2026-72984-type-confusion-rce,生成済み\n',encoding='utf-8-sig')
+          PY
+      - name: Article quality
+        run: python article_quality_check.py --input /tmp/e.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/a.csv --nos 80 --include-unstarted --mode geo --fail-on-error
+      - name: GEO quality
+        run: python geo_article_quality_check.py --input /tmp/e.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/g.csv --nos 80 --include-unstarted --mode geo --fail-on-error
+      - name: Measure article and image
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import re,hashlib
+          p=Path('projects/cybernote-security-news/articles/microsoft-edge-cve-2026-72984-type-confusion-rce.md')
+          text=p.read_text(encoding='utf-8'); front,body=text.split('---',2)[1:]
+          def compact(v): return re.sub(r'\s+','',v or '')
+          def plain(v):
+              v=re.sub(r'<!--.*?-->','',v or '',flags=re.S); v=re.sub(r'!\[([^\]]*)\]\([^)]+\)',r'\1',v); v=re.sub(r'\[([^\]]+)\]\([^)]+\)',r'\1',v); v=re.sub(r'https?://\S+','',v); v=re.sub(r'<[^>]+>','',v); v=re.sub(r'^\s{0,3}#{1,6}\s*','',v,flags=re.M); v=re.sub(r'^\s*[-*+]\s+','',v,flags=re.M); v=re.sub(r'^\s*\d+[.)]\s+','',v,flags=re.M); v=re.sub(r'[*_~>#|]','',v); return v
+          chars=lambda v:len(compact(plain(v)))
+          h1=re.search(r'^#\s+.+?$',body,flags=re.M); intro=re.split(r'^##\s+',body[h1.end():],maxsplit=1,flags=re.M)[0]; intro=re.sub(r'<!--\s*wp:group\b.*?-->.*?<!--\s*/wp:group\s*-->','',intro,flags=re.S|re.I)
+          sm=list(re.finditer(r'^##\s+まとめ\s*$',body,flags=re.M)); summary=body[sm[-1].end():]
+          ans=re.search(r'^answer:\s*"(.+)"$',front,flags=re.M).group(1); faq=re.findall(r'^\s+a:\s*"(.+)"$',front,flags=re.M)
+          urls=re.findall(r'https?://[^\s)"\'<>]+',body); ints=[u.rstrip('.,。') for u in urls if 'cybernote.click' in u]
+          h2=list(re.finditer(r'^##\s+(.+?)\s*$',body,flags=re.M)); leads=[]
+          for i,m in enumerate(h2):
+              if m.group(1).strip()=='まとめ': continue
+              end=h2[i+1].start() if i+1<len(h2) else len(body); sec=body[m.end():end]; before=re.split(r'^###\s+',sec,maxsplit=1,flags=re.M)[0]; ps=[x.strip() for x in re.split(r'\n\s*\n',before.strip()) if x.strip() and not x.strip().startswith(('<!--','<'))]; leads.append((m.group(1).strip(),chars(ps[0]) if ps else 0))
+          hs=re.findall(r'^#{2,3}\s+(.+?)\s*$',body,flags=re.M); dups=sorted(x for x in set(hs) if hs.count(x)>1)
+          print('METRICS',{'core':chars(body),'intro':chars(intro),'summary':chars(summary),'answer':chars(ans),'faq':[chars(x) for x in faq],'sources':len(re.findall(r'^\s+- title:',front,flags=re.M)),'internal_unique':len(set(ints)),'ref_boxes':body.count('is-style-information-box'),'blogcards':body.count('wp:cocoon-blocks/embed-blogcard'),'forbidden_h2':len(re.findall(r'^##\s+(FAQ|よくある質問|参考情報|参考・出典)\s*$',body,flags=re.M)),'summary_count':len(sm),'h2_leads':leads,'duplicate_headings':dups,'list_table_lines':len([l for l in body.splitlines() if re.match(r'^\s*(?:[-*+]\s+|\d+[.)]\s+|\|)',l)])})
+          ip=Path('projects/cybernote-security-news/eyecatches/microsoft-edge-cve-2026-72984-type-confusion-rce.png'); b=ip.read_bytes(); assert b[:8]==b'\x89PNG\r\n\x1a\n'
+          with Image.open(ip) as im: im.load(); print('IMAGE',im.format,im.size,im.mode,len(b)); assert im.format=='PNG' and im.size==(1200,800) and im.mode=='RGB'
+          print('IMAGE_BLOB',hashlib.sha1(f'blob {len(b)}\0'.encode()+b).hexdigest())
+          print('ARTICLE_BLOB',hashlib.sha1(f'blob {len(p.read_bytes())}\0'.encode()+p.read_bytes()).hexdigest())
+          PY
