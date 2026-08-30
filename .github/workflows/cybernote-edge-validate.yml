@@ -6,7 +6,7 @@ permissions:
   contents: write
 jobs:
   validate:
-    if: github.actor != 'github-actions[bot]'
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +21,7 @@ jobs:
       - name: Generate eyecatch
         run: |
           python - <<'PY'
-          from PIL import Image,ImageDraw,ImageFont
+          from PIL import Image, ImageDraw, ImageFont
           from pathlib import Path
           import hashlib
           p=Path('projects/cybernote-security-news/eyecatches/microsoft-edge-cve-2026-72984-type-confusion-rce.png')
@@ -32,7 +32,7 @@ jobs:
               f=ImageFont.truetype(fp,size); bb=d.textbbox(pos,text,font=f); assert bb[2]<=1200 and bb[3]<=800; d.text(pos,text,font=f,fill=col)
           im.save(p,'PNG',optimize=True,compress_level=9)
           raw=p.read_bytes(); assert raw[:8]==b'\x89PNG\r\n\x1a\n'
-          with Image.open(p) as x: x.load(); assert x.size==(1200,800) and x.mode=='RGB'
+          with Image.open(p) as x: x.load(); assert x.size==(1200,800) and x.mode=='RGB' and x.format=='PNG'
           print('GENERATED',len(raw),hashlib.sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest())
           PY
       - name: Show checker help
@@ -40,7 +40,11 @@ jobs:
           python article_quality_check.py --help
           python geo_article_quality_check.py --help
       - name: Prepare ledger
-        run: "printf '\357\273\277No,記事タイトル,スラッグ,生成ステータス\n80,【重要】Microsoft EdgeにCVSS 8.8のRCE、最新版へ更新を,microsoft-edge-cve-2026-72984-type-confusion-rce,生成済み\n' > /tmp/edge_ledger.csv"
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          Path('/tmp/edge_ledger.csv').write_text('No,記事タイトル,スラッグ,生成ステータス\n80,【重要】Microsoft EdgeにCVSS 8.8のRCE、最新版へ更新を,microsoft-edge-cve-2026-72984-type-confusion-rce,生成済み\n',encoding='utf-8-sig')
+          PY
       - name: Article quality
         run: python article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/article.csv --nos 80 --include-unstarted --mode geo --fail-on-error
       - name: GEO quality
