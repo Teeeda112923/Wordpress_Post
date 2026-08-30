@@ -1,12 +1,12 @@
 name: CyberNote Edge Validate
 on:
   push:
-    branches: [cybernote-edge-20260830]
+    branches:
+      - cybernote-edge-20260830
 permissions:
   contents: write
 jobs:
   validate:
-    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +15,7 @@ jobs:
           python-version: '3.12'
       - name: Install dependencies
         run: |
-          pip install pillow
+          python -m pip install pillow
           sudo apt-get update -qq
           sudo apt-get install -y fonts-noto-cjk
       - name: Generate eyecatch
@@ -29,10 +29,15 @@ jobs:
           fp='/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
           d.rectangle((80,80,1120,720),outline=(34,211,238),width=3)
           for pos,text,size,col in [((130,190),'Microsoft Edge',54,(245,248,250)),((130,325),'CVE-2026-72984',42,(34,211,238)),((130,470),'対処：152.0.4191.53以降へ更新',38,(245,248,250))]:
-              f=ImageFont.truetype(fp,size); bb=d.textbbox(pos,text,font=f); assert bb[2]<=1200 and bb[3]<=800; d.text(pos,text,font=f,fill=col)
+              f=ImageFont.truetype(fp,size)
+              bb=d.textbbox(pos,text,font=f)
+              assert bb[2] <= 1200 and bb[3] <= 800
+              d.text(pos,text,font=f,fill=col)
           im.save(p,'PNG',optimize=True,compress_level=9)
-          raw=p.read_bytes(); assert raw[:8]==b'\x89PNG\r\n\x1a\n'
-          with Image.open(p) as x: x.load(); assert x.size==(1200,800) and x.mode=='RGB' and x.format=='PNG'
+          raw=p.read_bytes()
+          assert raw[:8] == b'\x89PNG\r\n\x1a\n'
+          with Image.open(p) as x:
+              x.load(); assert x.size==(1200,800) and x.mode=='RGB' and x.format=='PNG'
           print('GENERATED',len(raw),hashlib.sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest())
           PY
       - name: Show checker help
@@ -43,24 +48,31 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
-          Path('/tmp/edge_ledger.csv').write_text('No,記事タイトル,スラッグ,生成ステータス\n80,【重要】Microsoft EdgeにCVSS 8.8のRCE、最新版へ更新を,microsoft-edge-cve-2026-72984-type-confusion-rce,生成済み\n',encoding='utf-8-sig')
+          text='No,記事タイトル,スラッグ,生成ステータス\n80,【重要】Microsoft EdgeにCVSS 8.8のRCE、最新版へ更新を,microsoft-edge-cve-2026-72984-type-confusion-rce,生成済み\n'
+          Path('/tmp/edge_ledger.csv').write_text(text,encoding='utf-8-sig')
           PY
       - name: Article quality
-        run: python article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/article.csv --nos 80 --include-unstarted --mode geo --fail-on-error
+        run: |
+          python article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/article.csv --nos 80 --include-unstarted --mode geo --fail-on-error
       - name: GEO quality
-        run: python geo_article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/geo.csv --nos 80 --include-unstarted --mode geo --fail-on-error
-      - name: Validate and commit eyecatch
+        run: |
+          python geo_article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/geo.csv --nos 80 --include-unstarted --mode geo --fail-on-error
+      - name: Validate eyecatch
         run: |
           python - <<'PY'
           from PIL import Image
           from pathlib import Path
           import hashlib
-          p=Path('projects/cybernote-security-news/eyecatches/microsoft-edge-cve-2026-72984-type-confusion-rce.png'); raw=p.read_bytes()
-          with Image.open(p) as im: im.load(); assert im.size==(1200,800) and im.mode=='RGB' and im.format=='PNG'
+          p=Path('projects/cybernote-security-news/eyecatches/microsoft-edge-cve-2026-72984-type-confusion-rce.png')
+          raw=p.read_bytes()
+          with Image.open(p) as im:
+              im.load(); assert im.size==(1200,800) and im.mode=='RGB' and im.format=='PNG'
           print('PNG_OK',len(raw),hashlib.sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest())
           PY
+      - name: Commit generated eyecatch
+        run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -- projects/cybernote-security-news/eyecatches/microsoft-edge-cve-2026-72984-type-confusion-rce.png
-          git commit -m 'Generate Microsoft Edge CVE-2026-72984 eyecatch'
+          git commit -m 'Generate Microsoft Edge CVE-2026-72984 eyecatch [skip ci]'
           git push origin HEAD:cybernote-edge-20260830
