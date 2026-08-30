@@ -1,0 +1,44 @@
+name: CyberNote Edge Validate
+on:
+  push:
+    branches: [cybernote-edge-20260830]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install Pillow
+        run: pip install pillow
+      - name: Show checker help
+        run: |
+          python article_quality_check.py --help
+          python geo_article_quality_check.py --help
+      - name: Prepare temporary ledger
+        run: |
+          printf '\357\273\277No,記事タイトル,スラッグ,生成ステータス\n80,【重要】Microsoft EdgeにCVSS 8.8のRCE、最新版へ更新を,microsoft-edge-cve-2026-72984-type-confusion-rce,生成済み\n' > /tmp/edge_ledger.csv
+      - name: Article quality checker
+        run: python article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/article_quality.csv --nos 80 --include-unstarted --mode geo --fail-on-error
+      - name: GEO quality checker
+        run: python geo_article_quality_check.py --input /tmp/edge_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/geo_quality.csv --nos 80 --include-unstarted --mode geo --fail-on-error
+      - name: Validate eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import hashlib
+          p=Path('projects/cybernote-security-news/eyecatches/microsoft-edge-cve-2026-72984-type-confusion-rce.png')
+          raw=p.read_bytes()
+          assert raw[:8] == b'\x89PNG\r\n\x1a\n'
+          with Image.open(p) as im:
+              im.load()
+              assert im.size == (1200,800)
+              assert im.mode == 'RGB'
+              assert im.format == 'PNG'
+          sha=hashlib.sha1(f'blob {len(raw)}\0'.encode()+raw).hexdigest()
+          print(f'PNG_OK size={len(raw)} sha={sha}')
+          PY
