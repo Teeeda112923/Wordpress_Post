@@ -262,28 +262,68 @@ def main() -> int:
         action="store_true",
         help="品質チェックでエラーになる記事は選ばず、次点の記事を選ぶ",
     )
+    parser.add_argument(
+        "--fallback-days",
+        type=int,
+        default=0,
+        help="当日分が無いとき、さかのぼって未投稿を拾う日数（0で無効）",
+    )
+    parser.add_argument(
+        "--with-date",
+        action="store_true",
+        help="「No<TAB>実際に選んだ公開予定日」を出力する",
+    )
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
     target_date = args.date.strip() or dt.datetime.now(JST).date().isoformat()
-    row = select_row(
-        read_ledger(repo_root / args.ledger),
-        target_date,
-        args.stage,
-        repo_root,
-        repo_root / args.articles_dir,
-        repo_root / args.eyecatches_dir,
-        args.no,
-        args.skip_quality_error,
-    )
+    rows = read_ledger(repo_root / args.ledger)
+
+    def pick(date: str) -> dict[str, str] | None:
+        return select_row(
+            rows,
+            date,
+            args.stage,
+            repo_root,
+            repo_root / args.articles_dir,
+            repo_root / args.eyecatches_dir,
+            args.no,
+            args.skip_quality_error,
+        )
+
+    row = pick(target_date)
+    selected_date = target_date
+
+    # 当日に投稿できる記事が無ければ、直近の未投稿をさかのぼって拾う。
+    # 枠は当日分を最優先とし、空振りする枠だけ取りこぼしの回収に充てる。
+    # 公開予定日を過ぎた記事は誰も拾わないため、放っておくと永久に残るため。
+    # さかのぼる範囲は鮮度で決める（脆弱性情報は数日で価値が落ちる）。
+    if row is None and args.fallback_days > 0:
+        base = dt.date.fromisoformat(target_date)
+        for back in range(1, args.fallback_days + 1):
+            past = (base - dt.timedelta(days=back)).isoformat()
+            row = pick(past)
+            if row is not None:
+                selected_date = past
+                print(
+                    f"当日分が無いため{back}日前の未投稿を拾います: date={past}",
+                    file=sys.stderr,
+                )
+                break
+
     if row is None:
         print(
-            f"処理対象なし: date={target_date}, stage={args.stage}",
+            f"処理対象なし: date={target_date}, stage={args.stage}"
+            + (f"（{args.fallback_days}日前まで確認）" if args.fallback_days > 0 else ""),
             file=sys.stderr,
         )
         return 0
 
-    print(value(row, "No", "番号", "記事No", "ID"))
+    row_no = value(row, "No", "番号", "記事No", "ID")
+    # さかのぼって拾った場合、呼び出し側は「実際に選んだ日」を知る必要がある。
+    # 遮断で自動再実行するとき当日の日付を渡してしまうと、拾ったはずの記事を
+    # 見失って何も投稿されなくなるため。
+    print(f"{row_no}\t{selected_date}" if args.with_date else row_no)
     return 0
 
 
