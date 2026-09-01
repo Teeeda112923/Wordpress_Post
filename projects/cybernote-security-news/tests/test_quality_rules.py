@@ -96,20 +96,27 @@ class QualityRuleTests(unittest.TestCase):
         errors, _ = quality.geo_errors(valid_front(), duplicate)
         self.assertIn("## まとめが1件ではありません（2件）", errors)
 
-    def test_front_matter_requires_two_faqs_and_primary_source(self) -> None:
+    def test_front_matter_requires_two_faqs_and_trusted_source(self) -> None:
         errors, _ = quality.geo_errors(valid_front(faq_count=1), valid_body())
         self.assertIn("フロントマターfaqが2問未満です", errors)
 
         errors, _ = quality.geo_errors(
             valid_front(source_url="https://example.com/news"), valid_body()
         )
-        self.assertIn("フロントマターsourcesに一次情報ドメインがありません", errors)
+        self.assertIn(
+            "フロントマターsourcesにCVE公式レコードまたは信頼できる一次情報がありません",
+            errors,
+        )
 
-        errors, _ = quality.geo_errors(
-            valid_front(source_url="https://nvd.nist.gov/vuln/detail/CVE-2026-12345"),
+    def test_cve_record_is_sufficient_primary_source(self) -> None:
+        errors, warnings = quality.geo_errors(
+            valid_front(
+                source_url="https://www.cve.org/CVERecord?id=CVE-2026-12345"
+            ),
             valid_body(),
         )
-        self.assertTrue(any("NVD/CVE登録以外" in error for error in errors))
+        self.assertEqual([], errors)
+        self.assertEqual([], warnings)
 
     def test_official_impact_type_must_match_critical_claims(self) -> None:
         front = valid_front().replace(

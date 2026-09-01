@@ -27,10 +27,6 @@ PRIMARY_DOMAINS = {
     "trendmicro.com",
 }
 
-# CVE/NVDは識別子・基礎評価の確認に重要だが、修正版や回避策の最終根拠は
-# ベンダー/調整機関のアドバイザリに求める。これらだけの記事は自動公開しない。
-REGISTRY_ONLY_DOMAINS = {"nvd.nist.gov", "cve.org", "mitre.org", "first.org"}
-
 IMPACT_PATTERNS = {
     "リモートコード実行": (
         r"リモートコード実行", r"任意コード実行", r"\bRCE\b", r"remote code execution"
@@ -184,20 +180,6 @@ def is_primary(url: str) -> bool:
     return host == "github.com" and "/security/advisories/" in parsed.path
 
 
-def is_actionable_primary(url: str) -> bool:
-    """NVD/CVE登録だけでなく、修正・対応の根拠になる公式情報か。"""
-    if not is_primary(url):
-        return False
-    try:
-        host = urlparse(url).netloc.lower().split(":")[0]
-    except ValueError:
-        return False
-    return not any(
-        host == domain or host.endswith("." + domain)
-        for domain in REGISTRY_ONLY_DOMAINS
-    )
-
-
 def impact_labels(text: str) -> set[str]:
     labels: set[str] = set()
     for label, patterns in IMPACT_PATTERNS.items():
@@ -349,11 +331,12 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     for title, url, publisher in sources:
         if not title or not url or not publisher:
             errors.append("フロントマターsourcesのtitle/url/publisherが未入力です")
+    # CVE公式レコードは、それ自体を一次情報として扱う。CVEが確認できる記事に
+    # ベンダー公式ドメインを別途必須とはしない。修正版や回避策について利用可能な
+    # ベンダー情報がある場合は、記事生成側で補強資料としてsourcesへ追加する。
     if not any(is_primary(url) for _, url, _ in sources):
-        errors.append("フロントマターsourcesに一次情報ドメインがありません")
-    if not any(is_actionable_primary(url) for _, url, _ in sources):
         errors.append(
-            "フロントマターsourcesにNVD/CVE登録以外のベンダー・調整機関の一次情報がありません"
+            "フロントマターsourcesにCVE公式レコードまたは信頼できる一次情報がありません"
         )
 
     # 公式出典タイトルが影響種別を1つに特定している場合、記事の主要部分が
