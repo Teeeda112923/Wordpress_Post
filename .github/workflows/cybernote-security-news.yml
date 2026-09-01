@@ -14,9 +14,10 @@ name: CyberNote Security News
 # 枠は4時間間隔に散らす。短時間に集中させるとボット対策に遮断されるため、
 # 枠を増やすときは間隔が詰まりすぎないか併せて確認すること。
 #
-# なお select_news.py は「公開予定日が当日」の行しか選ばないため、枠を増やしても
-# 前日以前の取りこぼしは拾わない。古い記事を出したいときは target_date を
-# 指定して手動実行する（脆弱性情報は鮮度が重要なため、自動では拾わせない）。
+# 当日分が無い枠では、直近の未投稿をさかのぼって拾う（既定3日、vars.BACKFILL_DAYS）。
+# 公開予定日を過ぎた記事は誰も拾わないため、放っておくと永久に残るため。
+# 当日分を最優先とし、空振りする枠だけを取りこぼしの回収に充てる。
+# さかのぼる範囲は鮮度で決める。日付を明示した手動実行ではさかのぼらない。
 on:
   schedule:
     # 08:30 JST
@@ -121,20 +122,38 @@ jobs:
         id: select
         env:
           INPUT_TARGET_DATE: ${{ inputs.target_date }}
+          # 当日分が無いときに、何日前までさかのぼって未投稿を拾うか。
+          # 脆弱性情報は数日で価値が落ちるため既定は3日。0で無効。
+          BACKFILL_DAYS: ${{ vars.BACKFILL_DAYS || '3' }}
         run: |
           TARGET_DATE="$INPUT_TARGET_DATE"
+          FALLBACK_ARG=""
           if [ -z "$TARGET_DATE" ]; then
             TARGET_DATE="$(TZ=Asia/Tokyo date +%F)"
+            # 日付を指定しない通常の枠だけ、当日分が無いときに取りこぼしを拾う。
+            # 日付を明示した手動実行では、指示された日だけを対象にする。
+            FALLBACK_ARG="--fallback-days ${BACKFILL_DAYS}"
           fi
 
-          NEWS_NO="$(python projects/cybernote-security-news/src/select_news.py \
+          SELECTED="$(python projects/cybernote-security-news/src/select_news.py \
             --ledger "$LEDGER" \
             --repo-root . \
             --articles-dir "$ARTICLES_DIR" \
             --eyecatches-dir "$IMAGES_DIR" \
             --date "$TARGET_DATE" \
             --stage draft \
-            --skip-quality-error)"   # select_news の draft = 未投稿の行を選ぶ、の意味
+            --skip-quality-error \
+            --with-date \
+            $FALLBACK_ARG)"   # select_news の draft = 未投稿の行を選ぶ、の意味
+
+          NEWS_NO="$(printf '%s' "$SELECTED" | cut -f1)"
+          # さかのぼって拾った場合は、当日ではなく実際に選んだ日を引き継ぐ。
+          # 遮断で自動再実行するとき当日の日付を渡すと、拾ったはずの記事を
+          # 見失って何も投稿されなくなるため。
+          SELECTED_DATE="$(printf '%s' "$SELECTED" | cut -f2)"
+          if [ -n "$SELECTED_DATE" ]; then
+            TARGET_DATE="$SELECTED_DATE"
+          fi
 
           echo "target_date=$TARGET_DATE"
           # 遮断で再実行するときは同じ日付を対象にする（日付をまたいでも枠を取りこぼさない）
@@ -288,7 +307,24 @@ jobs:
             echo "管理簿変更なし"
           else
             git commit -m "Update CyberNote publish status"
-            git push
+            # 台帳を書いている間に他の実行やPRのマージが main を進めると push が
+            # 弾かれる。投稿は済んでいるのに台帳だけ未投稿のまま残り、次の枠が
+            # 同じ記事をもう一度投稿しにいく（実際に No.78 で発生した）。
+            # 取り込んでから数回まで押し直す。
+            pushed=0
+            for attempt in 1 2 3; do
+              if git push; then
+                pushed=1
+                break
+              fi
+              echo "pushが弾かれました。main を取り込んで再試行します（${attempt}/3）"
+              git pull --rebase origin main
+              sleep $(( attempt * 5 ))
+            done
+            if [ "$pushed" -ne 1 ]; then
+              echo "::error title=管理簿を更新できません::投稿は完了しましたが管理簿のpushに失敗しました。手動で投稿ステータスを更新してください"
+              exit 1
+            fi
           fi
 
       - name: Upload results
