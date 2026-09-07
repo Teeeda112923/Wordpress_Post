@@ -1,0 +1,240 @@
+name: CyberNote Backlog Publish
+
+# 未投稿のまま残った既存7件を一度だけ回収するためのワークフロー。
+# このファイル自身の追加・更新をトリガーにし、通常の定期投稿とは同じ
+# concurrency groupで直列化する。完了確認後にこのファイルは削除する。
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cybernote-backlog-publish.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  BACKLOG_NOS: "1,4,27,32,33,53,93"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run regression tests
+        run: |
+          python -m unittest discover -s projects/cybernote-security-news/tests -p "test_*.py"
+
+      - name: Correct stale metadata and select remaining backlog
+        id: targets
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["LEDGER"])
+          with path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              rows = list(reader)
+
+          corrections = {
+              "32": {
+                  "記事タイトル案": "【注意】OpenVPN Windows版にCVSS 5.1、2.7.5へ更新を",
+                  "記事タイトル": "【注意】OpenVPN Windows版にCVSS 5.1、2.7.5へ更新を",
+                  "メタディスクリプション": "OpenVPN 2.7のWindows向けInteractive ServiceにあるCVE-2026-13379の影響、CVSS 5.1、2.7.5への更新と確認事項を解説します。",
+                  "目標文字数": "1464",
+              },
+              "33": {
+                  "記事タイトル案": "SOGoのICS招待にXSS脆弱性、5.12.8へ更新",
+                  "記事タイトル": "【注意】SOGoのICS招待にXSS脆弱性、5.12.8へ更新を",
+                  "メタディスクリプション": "SOGoのCVE-2026-8496を解説。ICSカレンダー招待を介したXSSの影響、CVSS 6.1、5.12.8への更新と確認事項をまとめます。",
+                  "主な出典URL": "https://www.cve.org/CVERecord?id=CVE-2026-8496",
+                  "目標文字数": "1440",
+              },
+          }
+          allowed = [value.strip() for value in os.environ["BACKLOG_NOS"].split(",")]
+          by_no = {str(row.get("No", "")).strip(): row for row in rows}
+          for no, values in corrections.items():
+              if no not in by_no:
+                  raise SystemExit(f"管理簿にNo.{no}がありません")
+              by_no[no].update(values)
+
+          pending = []
+          for no in allowed:
+              row = by_no.get(no)
+              if row is None:
+                  raise SystemExit(f"管理簿にNo.{no}がありません")
+              if (row.get("公開停止") or "").strip():
+                  continue
+              if (row.get("投稿ステータス") or "").strip() != "公開済み":
+                  pending.append(no)
+
+          with path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(rows)
+
+          value = ",".join(pending)
+          print(f"今回の対象: {value or 'なし'}")
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"nos={value}\n")
+          PY
+
+      - name: Article quality gates
+        if: steps.targets.outputs.nos != ''
+        run: |
+          python article_quality_check.py --input "$LEDGER" --articles-dir "$ARTICLES_DIR" --results "$RESULTS_DIR/article_quality_results.csv" --nos "${{ steps.targets.outputs.nos }}" --include-unstarted --mode geo --fail-on-error
+          python geo_article_quality_check.py --input "$LEDGER" --articles-dir "$ARTICLES_DIR" --results "$RESULTS_DIR/geo_article_quality_results.csv" --nos "${{ steps.targets.outputs.nos }}" --include-unstarted --fail-on-error
+
+      - name: Publish backlog to WordPress
+        if: steps.targets.outputs.nos != ''
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          POST_INTERVAL_SEC: ${{ vars.BACKLOG_POST_INTERVAL_SEC || '600' }}
+        run: |
+          python wp_auto_post.py --input "$LEDGER" --articles-dir "$ARTICLES_DIR" --images-dir "$IMAGES_DIR" --post-status publish --write-mode upsert --category "サイバーセキュリティ" --nos "${{ steps.targets.outputs.nos }}" --limit 7 --sleep "$POST_INTERVAL_SEC" --skip-auth-check --skip-internal-link-resolution --output-dir "$RESULTS_DIR"
+
+      - name: Update ledger with completed posts
+        if: always()
+        env:
+          TARGET_NOS: ${{ steps.targets.outputs.nos }}
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          from pathlib import Path
+
+          ledger_path = Path(os.environ["LEDGER"])
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+
+          wanted = {value.strip() for value in os.environ.get("TARGET_NOS", "").split(",") if value.strip()}
+          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          results = {}
+          if files:
+              with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+                  for row in csv.DictReader(handle):
+                      no = str(row.get("no", "")).strip()
+                      if no in wanted:
+                          results[no] = row
+
+          now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          for row in ledger_rows:
+              no = str(row.get("No", "")).strip()
+              result = results.get(no)
+              if result is None:
+                  continue
+              status = (result.get("status") or "").strip().lower()
+              if status in {"posted", "updated"}:
+                  row["投稿ステータス"] = "公開済み"
+                  row["WP投稿ID"] = result.get("post_id", "")
+                  row["WP投稿URL"] = result.get("post_link", "")
+                  row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or now
+                  row["エラー内容"] = ""
+              elif status in {"error", "skipped"}:
+                  row["エラー内容"] = result.get("error_content") or result.get("message") or status
+
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER"
+          if git diff --cached --quiet; then
+            echo "管理簿変更なし"
+          else
+            git commit -m "Publish pending CyberNote backlog"
+            pushed=0
+            for attempt in 1 2 3; do
+              if git push; then
+                pushed=1
+                break
+              fi
+              git pull --rebase origin main
+              sleep $(( attempt * 5 ))
+            done
+            test "$pushed" -eq 1
+          fi
+
+      - name: Confirm every backlog result
+        if: always() && steps.targets.outputs.nos != ''
+        env:
+          TARGET_NOS: ${{ steps.targets.outputs.nos }}
+        run: |
+          git fetch origin main
+          python - <<'PY'
+          import csv
+          import os
+          import subprocess
+          import sys
+
+          target = {value.strip() for value in os.environ["TARGET_NOS"].split(",") if value.strip()}
+          raw = subprocess.check_output(
+              ["git", "show", "origin/main:projects/cybernote-security-news/data/news_ledger.csv"]
+          ).decode("utf-8-sig")
+          rows = list(csv.DictReader(raw.splitlines()))
+          state = {
+              str(row.get("No", "")).strip(): (
+                  (row.get("投稿ステータス") or "").strip(),
+                  (row.get("WP投稿URL") or "").strip(),
+                  (row.get("エラー内容") or "").strip(),
+              )
+              for row in rows
+          }
+          failed = []
+          for no in sorted(target, key=int):
+              status, url, error = state.get(no, ("", "", "管理簿に行なし"))
+              print(f"No.{no}: {status or '未投稿'} {url or error}")
+              if status != "公開済み" or not url:
+                  failed.append(no)
+          if failed:
+              print(f"未完了: {','.join(failed)}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybernote-backlog-publish-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
