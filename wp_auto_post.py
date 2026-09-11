@@ -2211,12 +2211,9 @@ def main() -> int:
             # 「続報」は同一CVEの独立記事を意図しているため、slug/titleの冪等性のみ適用する。
             is_followup = "続報" in title or "followup" in slug.lower()
             if not existing and not is_followup:
-                cve_values = [
-                    safe_str(cng_meta.get("_cng_cve")),
-                    kw,
-                    title,
-                    slug,
-                ]
+                # タイトルとスラッグはこの記事の主題CVEだけを表す。補助メタやKW由来の
+                # 候補を混ぜると、別記事のCVEを重複と誤認するため対象外とする。
+                cve_values = [title, slug]
                 cve_matches = wp.find_posts_by_cves(cve_values)
                 if len(cve_matches) > 1:
                     ids = ", ".join(
