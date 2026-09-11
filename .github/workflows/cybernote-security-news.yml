@@ -18,6 +18,11 @@ name: CyberNote Security News
 # 当日分を最優先とし、空振りする枠だけを取りこぼしの回収に充てる。
 # さかのぼる範囲は鮮度で決める。日付を明示した手動実行ではさかのぼらない。
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/cybernote-security-news.yml"
   workflow_dispatch:
     inputs:
       target_date:
@@ -196,6 +201,7 @@ jobs:
             --nos "${{ steps.select.outputs.selected_no }}" \
             --limit 1 \
             --skip-auth-check \
+            --skip-existing-check \
             --skip-internal-link-resolution \
             --output-dir "$RESULTS_DIR" \
             $DRY_RUN_FLAG
