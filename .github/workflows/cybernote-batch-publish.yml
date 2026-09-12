@@ -6,9 +6,13 @@ name: CyberNote Batch Publish
 # 公開予定日を過ぎた記事は当日枠では拾われず、放っておくと残り続けるため、
 # 手動で一括投稿できる経路をここに常設する。
 #
+# nos には 1,4,27 のような列挙と 2-10,13-15 のような範囲を書ける。max_count に
+# 0 を入れると件数制限なしで、対象すべてをまとめて投稿する。
+#
 # 短時間に投稿を集中させると CORESERVER の Imunify360 に遮断されるため、
-# 記事と記事の間は interval_sec（既定10分）あける。1回の実行で投げる件数は
-# max_count（既定5件）までに抑える。
+# 記事と記事の間は interval_sec（既定10分）あける。既定の max_count は5件。
+# 大量に投げるときは 件数 × interval_sec がジョブのタイムアウト（350分）に
+# 収まるかを確認する。収まらない分は次の実行に回る（投稿済みは管理簿で分かる）。
 #
 # 定期実行（cron）は設定しない。通常枠と二重に投稿しないよう、実行は手動に限る。
 # 通常枠と同じ concurrency group に入れて直列化する。
@@ -16,12 +20,12 @@ on:
   workflow_dispatch:
     inputs:
       nos:
-        description: "投稿するNo（例: 1,4,27）。空欄なら未投稿を古い順に拾う"
+        description: "投稿するNo（例: 1,4,27 / 2-10,13-15）。空欄なら未投稿を古い順に拾う"
         type: string
         required: false
         default: ""
       max_count:
-        description: "1回の実行で投稿する最大件数"
+        description: "1回の実行で投稿する最大件数。0で無制限（全件）"
         type: string
         required: false
         default: "5"
@@ -30,6 +34,12 @@ on:
         type: string
         required: false
         default: "600"
+      post_status:
+        description: "投稿ステータス"
+        type: choice
+        required: true
+        default: "publish"
+        options: [publish, draft, pending]
       dry_run:
         description: "WordPressへ変更せず対象と品質だけ確認する"
         type: boolean
@@ -54,7 +64,8 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     # max_count 件 × interval_sec 待機を全部足しても収まる長さにする。
-    timeout-minutes: 180
+    # GitHubホストランナーの上限は6時間なので、その手前で切る。
+    timeout-minutes: 350
 
     steps:
       - name: Checkout
@@ -80,6 +91,7 @@ jobs:
         env:
           INPUT_NOS: ${{ inputs.nos }}
           MAX_COUNT: ${{ inputs.max_count }}
+          INTERVAL_SEC: ${{ inputs.interval_sec }}
         run: |
           python - <<'PY'
           import csv
@@ -118,20 +130,58 @@ jobs:
                   return "本文が見つからない"
               return ""
 
-          requested = [value.strip() for value in os.environ.get("INPUT_NOS", "").split(",") if value.strip()]
+          def parse_nos(raw: str) -> list[str]:
+              """1,4,27 の列挙と 2-10,13-15 の範囲の両方を受け取る。
+
+              旧 wp-auto-post ワークフローが範囲指定に対応していたため、
+              まとめ投稿でも同じ書き方ができるようにする。書かれた順序は保ち、
+              重複は先に出てきたものだけ残す。
+              """
+              result: list[str] = []
+              for chunk in raw.replace("、", ",").split(","):
+                  chunk = chunk.strip()
+                  if not chunk:
+                      continue
+                  if "-" in chunk:
+                      start, _, end = chunk.partition("-")
+                      start, end = start.strip(), end.strip()
+                      if not (start.isdigit() and end.isdigit()):
+                          sys.exit(f"Noの範囲指定が読めません: {chunk}")
+                      if int(start) > int(end):
+                          sys.exit(f"Noの範囲が逆向きです: {chunk}")
+                      values = [str(value) for value in range(int(start), int(end) + 1)]
+                  else:
+                      if not chunk.isdigit():
+                          sys.exit(f"Noが数字ではありません: {chunk}")
+                      values = [chunk]
+                  for value in values:
+                      if value not in result:
+                          result.append(value)
+              return result
+
+          requested = parse_nos(os.environ.get("INPUT_NOS", ""))
           if requested:
-              # 明示指定は取りこぼしを黙って飛ばさない。投稿できない指定は止める。
+              # 2-10 のような範囲でまとめて指定したとき、投稿できない行が1件
+              # 混ざっただけで全部止まると、大量投稿の用途で使えない。飛ばした行は
+              # 警告として名前を出し、黙って落とさないようにする。
               targets = []
+              skipped = []
               for no in requested:
                   row = by_no.get(no)
                   if row is None:
-                      sys.exit(f"管理簿にNo.{no}がありません")
+                      skipped.append(f"No.{no}（管理簿に行がない）")
+                      continue
                   reason = blocked(row)
                   if reason:
-                      sys.exit(f"No.{no} は投稿できません: {reason}")
+                      skipped.append(f"No.{no}（{reason}）")
+                      continue
                   if (row.get("投稿ステータス") or "").strip() == "公開済み":
                       print(f"No.{no} は公開済みです。upsertで更新します。")
                   targets.append(no)
+              if skipped:
+                  print(f"::warning title=投稿対象から外した記事::{'、'.join(skipped)}")
+              if not targets:
+                  sys.exit("指定されたNoはすべて投稿できません。上の警告を確認してください")
           else:
               pending = [
                   row
@@ -142,8 +192,10 @@ jobs:
               pending.sort(key=lambda row: ((row.get("公開予定日") or "9999-12-31").strip(), int(str(row.get("No", "0")).strip() or 0)))
               targets = [str(row.get("No", "")).strip() for row in pending]
 
+          # max_count は 0 で無制限。対象すべてをまとめて投稿する。
           limit = int(os.environ.get("MAX_COUNT") or "5")
-          if limit > 0:
+          if limit > 0 and len(targets) > limit:
+              print(f"対象{len(targets)}件のうち、max_count={limit}件だけ投稿します。残りは次の実行に回ります。")
               targets = targets[:limit]
 
           value = ",".join(targets)
@@ -151,6 +203,15 @@ jobs:
           for no in targets:
               row = by_no[no]
               print(f"  No.{no} {(row.get('公開予定日') or '').strip()} {(row.get('記事タイトル') or row.get('記事タイトル案') or '').strip()}")
+
+          # 間隔×件数がジョブのタイムアウトを超えると途中で打ち切られる。投稿できた
+          # 分は管理簿に残るので実行自体は止めないが、先に気づけるようにしておく。
+          interval = int(os.environ.get("INTERVAL_SEC") or "600")
+          estimated_min = (max(len(targets) - 1, 0) * interval) / 60
+          if targets:
+              print(f"投稿間隔{interval}秒での所要目安: 約{estimated_min:.0f}分")
+          if estimated_min > 330:
+              print(f"::warning title=タイムアウトする可能性::{len(targets)}件×{interval}秒は約{estimated_min:.0f}分で、ジョブ上限350分を超えます。max_count を減らすか interval_sec を短くしてください")
 
           with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
               handle.write(f"nos={value}\n")
@@ -174,6 +235,7 @@ jobs:
           WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
           POST_INTERVAL_SEC: ${{ inputs.interval_sec }}
           POST_COUNT: ${{ steps.targets.outputs.count }}
+          POST_STATUS: ${{ inputs.post_status }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
         run: |
           DRY_RUN_FLAG=""
@@ -185,7 +247,7 @@ jobs:
             --input "$LEDGER" \
             --articles-dir "$ARTICLES_DIR" \
             --images-dir "$IMAGES_DIR" \
-            --post-status publish \
+            --post-status "$POST_STATUS" \
             --write-mode upsert \
             --category "サイバーセキュリティ" \
             --nos "${{ steps.targets.outputs.nos }}" \
@@ -202,6 +264,7 @@ jobs:
         if: always() && steps.targets.outputs.nos != '' && inputs.dry_run == false
         env:
           TARGET_NOS: ${{ steps.targets.outputs.nos }}
+          POST_STATUS: ${{ inputs.post_status }}
         run: |
           python - <<'PY'
           import csv
@@ -226,6 +289,7 @@ jobs:
                           results[no] = row
 
           now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          posted_as_publish = os.environ.get("POST_STATUS", "publish") == "publish"
           for row in ledger_rows:
               no = str(row.get("No", "")).strip()
               result = results.get(no)
@@ -233,7 +297,9 @@ jobs:
                   continue
               status = (result.get("status") or "").strip().lower()
               if status in {"posted", "updated"}:
-                  row["投稿ステータス"] = "公開済み"
+                  # draft / pending で投げた回を「公開済み」にすると、実際には
+                  # 下書きのままなのに次の実行が対象から外してしまう。
+                  row["投稿ステータス"] = "公開済み" if posted_as_publish else "下書き済み"
                   row["WP投稿ID"] = result.get("post_id", "")
                   row["WP投稿URL"] = result.get("post_link", "")
                   row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or now
@@ -273,7 +339,8 @@ jobs:
           fi
 
       - name: Confirm every result
-        if: always() && steps.targets.outputs.nos != '' && inputs.dry_run == false
+        # draft / pending で投げた回は公開URLが付かないため確認しない。
+        if: always() && steps.targets.outputs.nos != '' && inputs.dry_run == false && inputs.post_status == 'publish'
         env:
           TARGET_NOS: ${{ steps.targets.outputs.nos }}
         run: |
