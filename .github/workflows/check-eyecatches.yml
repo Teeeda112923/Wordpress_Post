@@ -7,15 +7,17 @@ name: Check Eyecatches
 # 実際に丸1日以上、毎枠失敗し続けた（スコア1位の記事の画像が壊れていたため、
 # 投稿できる記事があっても順番が回ってこなかった）。
 # 画像を追加・変更したコミットで検査し、壊れていれば赤いバツを出す。
+# 検査対象は現役のCyberNote記事のアイキャッチだけにする。archive/ 配下の
+# 旧プロジェクトの画像は投稿に使わないため、壊れていても赤いバツは出さない。
 on:
   push:
     paths:
-      - "**/eyecatches/**.png"
+      - "projects/cybernote-security-news/eyecatches/**.png"
       - "eyecatch_file_check.py"
       - ".github/workflows/check-eyecatches.yml"
   pull_request:
     paths:
-      - "**/eyecatches/**.png"
+      - "projects/cybernote-security-news/eyecatches/**.png"
       - "eyecatch_file_check.py"
   workflow_dispatch:
 
@@ -42,4 +44,4 @@ jobs:
         run: pip install "Pillow>=10.3.0"
 
       - name: Check eyecatch images
-        run: python eyecatch_file_check.py
+        run: python eyecatch_file_check.py projects/cybernote-security-news/eyecatches

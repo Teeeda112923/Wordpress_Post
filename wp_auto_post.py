@@ -9,11 +9,11 @@ GitHub Actions から WordPress REST API へ記事を自動投稿するスクリ
 
 使い方:
     python wp_auto_post.py \
-        --input data/seo_80kw_production_management.xlsx \
-        --sheet 制作管理表 \
-        --articles-dir articles \
-        --images-dir eyecatches \
-        --post-status draft \
+        --input projects/cybernote-security-news/data/news_ledger.csv \
+        --articles-dir projects/cybernote-security-news/articles \
+        --images-dir projects/cybernote-security-news/eyecatches \
+        --post-status publish \
+        --write-mode upsert \
         --dry-run \
         --limit 1
 """
