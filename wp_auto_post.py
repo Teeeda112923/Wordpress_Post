@@ -1719,6 +1719,14 @@ def parse_args() -> argparse.Namespace:
         help="管理表の記事に対応するサイト上の投稿（重複含む）を完全削除して終了",
     )
     parser.add_argument(
+        "--fallback-media-id",
+        default="",
+        help=(
+            "アイキャッチが壊れている・見つからない場合に使う既定画像のメディアID。"
+            "未指定なら環境変数 WP_FALLBACK_MEDIA_ID を見る。どちらも無ければ従来どおり記事をエラーにする"
+        ),
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="--delete-managed / --cleanup-media の確認プロンプトをスキップ",
@@ -1968,6 +1976,18 @@ def main() -> int:
             "WordPress上の既存投稿を確認できない場合は、重複防止のため停止します。"
         )
 
+    # アイキャッチが使えないときの代替画像。サイトのメディアライブラリに
+    # すでにある画像をIDで指すだけで、ファイルの再アップロードはしない。
+    raw_fallback = safe_str(args.fallback_media_id) or os.environ.get("WP_FALLBACK_MEDIA_ID", "")
+    raw_fallback = raw_fallback.strip()
+    if raw_fallback and not raw_fallback.isdigit():
+        raise RuntimeError(
+            f"代替アイキャッチのメディアIDが数字ではありません: {raw_fallback}"
+        )
+    fallback_media_id = int(raw_fallback or 0)
+    if fallback_media_id:
+        print(f"  代替アイキャッチ: media id={fallback_media_id}（画像が壊れている記事に使用）")
+
     wp: WordPressClient | None = None
     if args.check_images_only:
         print("  画像チェックのみ実行します（WordPress 投稿は行いません）。")
@@ -2146,14 +2166,26 @@ def main() -> int:
         # 拡張子だけがPNGでも実体が破損していると、メディア登録やサムネイル生成で
         # サーバー側の分かりにくいエラーになるため、投稿結果で明示的に失敗させる。
         # WARN（PNG以外・比率違い）は従来どおり投稿を続ける。
+        use_fallback_media = False
         if img_chk["level"] == "NG":
-            result["status"] = "error"
-            result["message"] = img_chk["error_content"]
-            result["error_content"] = img_chk["error_content"]
-            results.append(result)
-            processed += 1
-            print(f"[ERROR] No.{no_value} {title} -> {img_chk['error_content']}")
-            continue
+            if fallback_media_id:
+                # 画像が壊れている・見つからない場合でも記事自体は落とさず、
+                # 既定のアイキャッチで投稿する。壊れたPNGを送るとサムネイル生成で
+                # サーバー側が500を返すため、ファイルは送らずメディアIDだけを使う。
+                use_fallback_media = True
+                image_path = None
+                result["image_status"] = "代替画像"
+                result["image_error"] = img_chk["error_content"]
+                result["image_file"] = f"（代替アイキャッチ media id={fallback_media_id}）"
+                print(f"  [代替] {img_chk['error_content']} -> media id={fallback_media_id} を使用します")
+            else:
+                result["status"] = "error"
+                result["message"] = img_chk["error_content"]
+                result["error_content"] = img_chk["error_content"]
+                results.append(result)
+                processed += 1
+                print(f"[ERROR] No.{no_value} {title} -> {img_chk['error_content']}")
+                continue
 
         if article_path is None:
             result["status"] = "skipped"
@@ -2190,7 +2222,12 @@ def main() -> int:
             md_text, no_to_url, kw, align_focus_keyword(kw, title)
         )
         content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
-        img_note = "画像あり" if image_path else "画像なし"
+        if image_path:
+            img_note = "画像あり"
+        elif use_fallback_media:
+            img_note = f"代替画像 media id={fallback_media_id}"
+        else:
+            img_note = "画像なし"
 
         # 文字数実績と判定（本文があれば dry-run でも算出）
         char_target = safe_str(row.get(col["char_target"])) if col["char_target"] else ""
@@ -2329,6 +2366,19 @@ def main() -> int:
                     featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
                 # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
                 if not args.no_inline_eyecatch and media_url:
+                    post_content = build_image_block(media_url, alt_text) + body_html
+            elif use_fallback_media:
+                # 既存メディアを指すだけなのでアップロードは発生しない。
+                # IDが実在しないまま featured_media に入れると、投稿はできるのに
+                # アイキャッチが空という分かりにくい状態になるため先に確認する。
+                media_url = wp.get_media_source_url(fallback_media_id)
+                if not media_url:
+                    raise RuntimeError(
+                        f"代替アイキャッチ media id={fallback_media_id} をサイト上で確認できません。"
+                        "--fallback-media-id の値を見直してください"
+                    )
+                featured_media = fallback_media_id
+                if not args.no_inline_eyecatch:
                     post_content = build_image_block(media_url, alt_text) + body_html
 
             # フォーカスKWは本文表記に寄せ、SEOタイトル/説明も Rank Math に設定する
