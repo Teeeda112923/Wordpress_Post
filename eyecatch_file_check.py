@@ -30,12 +30,16 @@ TRUNCATE_MARGIN = 64
 # この検査は、壊れた画像を投稿前に止めるためにある。常に赤いままだと
 # 新しく壊れた画像が混ざっても気づけず、警報として機能しなくなる。
 # 除外した枚数と名前は必ずログに出し、黙って無視しない。
+# ここに挙げた画像は利用者の指定で残しているもので、修復も削除もしない。
 KNOWN_BROKEN = {
     # 同一CVEの記事がmainにあるため重複除外された。既存成果物として保持する。
     "microsoft-entra-id-cve-2026-62916-authentication-bypass.png",
     # 使い捨てワークフローで公開済み。管理簿に行がなく、投稿処理からは参照されない。
     "m-trends-2026-cyberattack-22-seconds.png",
 }
+
+# 投稿時の画像検証（wp_auto_post.check_eyecatch）はこの除外を見ない。
+# 壊れた画像をWordPressへ送らせない判定はそちらが担う。
 
 
 def collect(targets: list[str]) -> list[Path]:
