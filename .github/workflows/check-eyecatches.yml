@@ -42,4 +42,26 @@ jobs:
         run: pip install "Pillow>=10.3.0"
 
       - name: Check eyecatch images
-        run: python eyecatch_file_check.py
+        # ユーザー指定で意図的に残す既存破損画像2枚だけをCIから除外する。
+        # 投稿時の画像検証や単体チェッカーの判定は変更しない。
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          from pathlib import Path
+          from eyecatch_file_check import collect
+
+          excluded = {
+              Path("projects/cybernote-security-news/eyecatches/microsoft-entra-id-cve-2026-62916-authentication-bypass.png").resolve(),
+              Path("projects/cybernote-security-news/eyecatches/m-trends-2026-cyberattack-22-seconds.png").resolve(),
+          }
+          targets = []
+          for path in collect([]):
+              if path.resolve() in excluded:
+                  print(f"[SKIP] ユーザー指定の既存成果物: {path}", flush=True)
+              else:
+                  targets.append(str(path))
+          if not targets:
+              raise SystemExit("検査対象のPNGが見つかりません。")
+          subprocess.run([sys.executable, "eyecatch_file_check.py", *targets], check=True)
+          PY
