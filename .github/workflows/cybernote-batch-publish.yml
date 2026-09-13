@@ -263,6 +263,46 @@ jobs:
             --output-dir "$RESULTS_DIR" \
             $DRY_RUN_FLAG
 
+      - name: Fail on WordPress errors
+        # wp_auto_post.py は1件失敗しても全体は止めず、結果CSVに記録して終了コード0で
+        # 終わる。そのため投稿が全件失敗してもこのジョブは成功扱いになっていた
+        # （実際に5件すべて遮断された回が success になった）。結果CSVを見て判定する。
+        if: steps.targets.outputs.nos != ''
+        env:
+          TARGET_NOS: ${{ steps.targets.outputs.nos }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          wanted = [v.strip() for v in os.environ["TARGET_NOS"].split(",") if v.strip()]
+          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          if not files:
+              sys.exit("投稿結果CSVが見つかりません。")
+          with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+              rows = {str(r.get("no", "")).strip(): r for r in csv.DictReader(handle)}
+
+          ok = {"posted", "updated", "dry-run"}
+          failed = []
+          for no in wanted:
+              row = rows.get(no)
+              if row is None:
+                  failed.append(f"No.{no}: 結果なし")
+                  continue
+              status = (row.get("status") or "").strip().lower()
+              if status not in ok:
+                  detail = row.get("error_content") or row.get("message") or status
+                  failed.append(f"No.{no}: {status} {detail}")
+              else:
+                  print(f"No.{no}: {status}")
+          if failed:
+              for line in failed:
+                  print(f"[ERROR] {line}", file=sys.stderr)
+              sys.exit(f"{len(failed)}/{len(wanted)}件が投稿できませんでした")
+          PY
+
       - name: Update ledger with completed posts
         # 途中で遮断されても、そこまでに公開できた分は管理簿へ反映する。
         # 反映しないと次の実行が同じ記事をもう一度投稿しにいく。
