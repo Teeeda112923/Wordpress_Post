@@ -30,8 +30,13 @@ ChatGPT（記事Markdown＋アイキャッチPNGを生成）
 ```
 
 - ワークフロー: [`.github/workflows/cybernote-security-news.yml`](.github/workflows/cybernote-security-news.yml)
-- 起動時刻はChatGPT側の自動タスク（09:00 / 12:00 / 15:00 / 19:00 JST）で管理します。
-  二重投稿を防ぐため、**GitHub Actions側のcronは設定しません**。
+- **定期実行はGitHub Actionsのcronです（09:00 / 12:00 / 15:00 / 19:00 JST）。**
+  各枠で、その日の未投稿記事を1件だけ公開します。対象がない枠では投稿しません。
+- ChatGPT側の自動タスクからも起動できます。同じ枠で両方走っても二重投稿にはなりません
+  （concurrency groupで直列化 → `select_news.py` は未投稿の行しか選ばない →
+  公開後は管理簿が「公開済み」になる → `wp_auto_post.py` がslug・タイトルで既存投稿を確認）。
+- スケジュール実行はリポジトリが60日間無活動になると自動で止まります。
+  GitHubの仕様で、混雑時は数分〜十数分遅れて起動することがあります。
 - 品質ゲートに落ちた日、一次情報を確認できない日は投稿しません。
 - Imunify360に遮断された場合だけ、時間をおいて自動で再実行します（`ACTIONS_PAT` が必要）。
 
