@@ -24,9 +24,30 @@ from pathlib import Path
 TRUNCATE_BOUNDARY = 768 * 1024
 TRUNCATE_MARGIN = 64
 
+# 意図的に壊れたまま残している画像。既存成果物は変更しない方針のため、
+# 検査対象から外して「新しく壊れた画像」だけを検出できるようにする。
+#
+# この検査は、壊れた画像を投稿前に止めるためにある。常に赤いままだと
+# 新しく壊れた画像が混ざっても気づけず、警報として機能しなくなる。
+# 除外した枚数と名前は必ずログに出し、黙って無視しない。
+# ここに挙げた画像は利用者の指定で残しているもので、修復も削除もしない。
+KNOWN_BROKEN = {
+    # 同一CVEの記事がmainにあるため重複除外された。既存成果物として保持する。
+    "microsoft-entra-id-cve-2026-62916-authentication-bypass.png",
+    # 使い捨てワークフローで公開済み。管理簿に行がなく、投稿処理からは参照されない。
+    "m-trends-2026-cyberattack-22-seconds.png",
+}
+
+# 投稿時の画像検証（wp_auto_post.check_eyecatch）はこの除外を見ない。
+# 壊れた画像をWordPressへ送らせない判定はそちらが担う。
+
 
 def collect(targets: list[str]) -> list[Path]:
-    """検査対象のPNGを集める。指定がなければ eyecatches ディレクトリを探す。"""
+    """検査対象のPNGを集める。指定がなければ eyecatches ディレクトリを探す。
+
+    KNOWN_BROKEN のファイルは含めない。ファイル名だけで判定するため、
+    同名のファイルを別ディレクトリに置いた場合も除外される。
+    """
     paths: list[Path] = []
     if targets:
         for target in targets:
@@ -40,7 +61,7 @@ def collect(targets: list[str]) -> list[Path]:
             # リポジトリ直下に同名のファイルがあるためディレクトリだけを見る
             if directory.is_dir() and ".git" not in directory.parts:
                 paths += sorted(directory.rglob("*.png"))
-    return paths
+    return [path for path in paths if path.name not in KNOWN_BROKEN]
 
 
 def failure_reason(path: Path) -> str:
@@ -63,6 +84,10 @@ def main() -> int:
     args = parser.parse_args()
 
     paths = collect(args.targets)
+    if KNOWN_BROKEN:
+        print(f"意図的に検査から外している画像: {len(KNOWN_BROKEN)}件")
+        for name in sorted(KNOWN_BROKEN):
+            print(f"  - {name}")
     if not paths:
         print("検査対象のPNGが見つかりません。")
         return 0

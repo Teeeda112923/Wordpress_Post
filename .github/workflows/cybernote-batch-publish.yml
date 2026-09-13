@@ -1,0 +1,391 @@
+name: CyberNote Batch Publish
+
+# 未投稿のまま溜まった記事を、まとめて（複数件を1回の実行で）WordPressへ公開する。
+#
+# 通常運用の cybernote-security-news.yml は1回の実行で1記事しか投稿しない。
+# 公開予定日を過ぎた記事は当日枠では拾われず、放っておくと残り続けるため、
+# 手動で一括投稿できる経路をここに常設する。
+#
+# nos には 1,4,27 のような列挙と 2-10,13-15 のような範囲を書ける。max_count に
+# 0 を入れると件数制限なしで、対象すべてをまとめて投稿する。
+#
+# 短時間に投稿を集中させると CORESERVER の Imunify360 に遮断されるため、
+# 記事と記事の間は interval_sec（既定10分）あける。既定の max_count は5件。
+# 大量に投げるときは 件数 × interval_sec がジョブのタイムアウト（350分）に
+# 収まるかを確認する。収まらない分は次の実行に回る（投稿済みは管理簿で分かる）。
+#
+# 定期実行（cron）は設定しない。通常枠と二重に投稿しないよう、実行は手動に限る。
+# 通常枠と同じ concurrency group に入れて直列化する。
+on:
+  workflow_dispatch:
+    inputs:
+      nos:
+        description: "投稿するNo（例: 1,4,27 / 2-10,13-15）。空欄なら未投稿を古い順に拾う"
+        type: string
+        required: false
+        default: ""
+      max_count:
+        description: "1回の実行で投稿する最大件数。0で無制限（全件）"
+        type: string
+        required: false
+        default: "5"
+      interval_sec:
+        description: "記事と記事の間隔（秒）。遮断対策のため既定600秒"
+        type: string
+        required: false
+        default: "600"
+      post_status:
+        description: "投稿ステータス"
+        type: choice
+        required: true
+        default: "publish"
+        options: [publish, draft, pending]
+      dry_run:
+        description: "WordPressへ変更せず対象と品質だけ確認する"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # max_count 件 × interval_sec 待機を全部足しても収まる長さにする。
+    # GitHubホストランナーの上限は6時間なので、その手前で切る。
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run regression tests
+        run: |
+          python -m unittest discover -s projects/cybernote-security-news/tests -p "test_*.py"
+
+      - name: Select targets
+        id: targets
+        env:
+          INPUT_NOS: ${{ inputs.nos }}
+          MAX_COUNT: ${{ inputs.max_count }}
+          INTERVAL_SEC: ${{ inputs.interval_sec }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          import sys
+          from pathlib import Path
+
+          ledger = Path(os.environ["LEDGER"])
+          articles_dir = Path(os.environ["ARTICLES_DIR"])
+          with ledger.open(encoding="utf-8-sig", newline="") as handle:
+              rows = list(csv.DictReader(handle))
+
+          by_no = {str(row.get("No", "")).strip(): row for row in rows}
+
+          def article_exists(row: dict) -> bool:
+              """管理簿の記事ファイル、No3桁の順に本文を探す。
+
+              「記事ファイル」列にはリポジトリ相対パス
+              （projects/cybernote-security-news/articles/xxx.md）が入っている行と、
+              ファイル名だけの行が混在するため、どちらでも見つけられるようにする。
+              """
+              name = (row.get("記事ファイル") or row.get("記事ファイル名") or "").strip()
+              if name:
+                  if Path(name).exists() or (articles_dir / Path(name).name).exists():
+                      return True
+              no = str(row.get("No", "")).strip()
+              return no.isdigit() and (articles_dir / f"{int(no):03d}.md").exists()
+
+          def blocked(row: dict) -> str:
+              """投稿してはいけない理由を返す（問題なければ空文字）。"""
+              if (row.get("公開停止") or "").strip():
+                  return "公開停止"
+              if (row.get("生成ステータス") or "").strip() != "生成済み":
+                  return "未生成"
+              if not article_exists(row):
+                  return "本文が見つからない"
+              return ""
+
+          def parse_nos(raw: str) -> list[str]:
+              """1,4,27 の列挙と 2-10,13-15 の範囲の両方を受け取る。
+
+              旧 wp-auto-post ワークフローが範囲指定に対応していたため、
+              まとめ投稿でも同じ書き方ができるようにする。書かれた順序は保ち、
+              重複は先に出てきたものだけ残す。
+              """
+              result: list[str] = []
+              for chunk in raw.replace("、", ",").split(","):
+                  chunk = chunk.strip()
+                  if not chunk:
+                      continue
+                  if "-" in chunk:
+                      start, _, end = chunk.partition("-")
+                      start, end = start.strip(), end.strip()
+                      if not (start.isdigit() and end.isdigit()):
+                          sys.exit(f"Noの範囲指定が読めません: {chunk}")
+                      if int(start) > int(end):
+                          sys.exit(f"Noの範囲が逆向きです: {chunk}")
+                      values = [str(value) for value in range(int(start), int(end) + 1)]
+                  else:
+                      if not chunk.isdigit():
+                          sys.exit(f"Noが数字ではありません: {chunk}")
+                      values = [chunk]
+                  for value in values:
+                      if value not in result:
+                          result.append(value)
+              return result
+
+          requested = parse_nos(os.environ.get("INPUT_NOS", ""))
+          if requested:
+              # 2-10 のような範囲でまとめて指定したとき、投稿できない行が1件
+              # 混ざっただけで全部止まると、大量投稿の用途で使えない。飛ばした行は
+              # 警告として名前を出し、黙って落とさないようにする。
+              targets = []
+              skipped = []
+              for no in requested:
+                  row = by_no.get(no)
+                  if row is None:
+                      skipped.append(f"No.{no}（管理簿に行がない）")
+                      continue
+                  reason = blocked(row)
+                  if reason:
+                      skipped.append(f"No.{no}（{reason}）")
+                      continue
+                  if (row.get("投稿ステータス") or "").strip() == "公開済み":
+                      print(f"No.{no} は公開済みです。upsertで更新します。")
+                  targets.append(no)
+              if skipped:
+                  print(f"::warning title=投稿対象から外した記事::{'、'.join(skipped)}")
+              if not targets:
+                  sys.exit("指定されたNoはすべて投稿できません。上の警告を確認してください")
+          else:
+              pending = [
+                  row
+                  for row in rows
+                  if (row.get("投稿ステータス") or "").strip() != "公開済み" and not blocked(row)
+              ]
+              # 公開予定日が古いものから拾う。日付が空の行は最後に回す。
+              pending.sort(key=lambda row: ((row.get("公開予定日") or "9999-12-31").strip(), int(str(row.get("No", "0")).strip() or 0)))
+              targets = [str(row.get("No", "")).strip() for row in pending]
+
+          # max_count は 0 で無制限。対象すべてをまとめて投稿する。
+          limit = int(os.environ.get("MAX_COUNT") or "5")
+          if limit > 0 and len(targets) > limit:
+              print(f"対象{len(targets)}件のうち、max_count={limit}件だけ投稿します。残りは次の実行に回ります。")
+              targets = targets[:limit]
+
+          value = ",".join(targets)
+          print(f"今回の対象: {value or 'なし'}（{len(targets)}件）")
+          for no in targets:
+              row = by_no[no]
+              print(f"  No.{no} {(row.get('公開予定日') or '').strip()} {(row.get('記事タイトル') or row.get('記事タイトル案') or '').strip()}")
+
+          # 間隔×件数がジョブのタイムアウトを超えると途中で打ち切られる。投稿できた
+          # 分は管理簿に残るので実行自体は止めないが、先に気づけるようにしておく。
+          interval = int(os.environ.get("INTERVAL_SEC") or "600")
+          estimated_min = (max(len(targets) - 1, 0) * interval) / 60
+          if targets:
+              print(f"投稿間隔{interval}秒での所要目安: 約{estimated_min:.0f}分")
+          if estimated_min > 330:
+              print(f"::warning title=タイムアウトする可能性::{len(targets)}件×{interval}秒は約{estimated_min:.0f}分で、ジョブ上限350分を超えます。max_count を減らすか interval_sec を短くしてください")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as handle:
+              handle.write(f"nos={value}\n")
+              handle.write(f"count={len(targets)}\n")
+          PY
+
+      - name: Article quality gates
+        if: steps.targets.outputs.nos != ''
+        run: |
+          python article_quality_check.py --input "$LEDGER" --articles-dir "$ARTICLES_DIR" --results "$RESULTS_DIR/article_quality_results.csv" --nos "${{ steps.targets.outputs.nos }}" --include-unstarted --mode geo --fail-on-error
+          python geo_article_quality_check.py --input "$LEDGER" --articles-dir "$ARTICLES_DIR" --results "$RESULTS_DIR/geo_article_quality_results.csv" --nos "${{ steps.targets.outputs.nos }}" --include-unstarted --fail-on-error
+
+      - name: Publish to WordPress
+        if: steps.targets.outputs.nos != ''
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          # ボット対策に弾かれる場合はリポジトリ変数 WP_USER_AGENT で上書きする
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          # アイキャッチが壊れている・見つからないときに使う既定画像のメディアID。
+          # 記事を落とさず、サイトにある既存画像で公開を通す。差し替えたいときは
+          # リポジトリ変数 WP_FALLBACK_MEDIA_ID を設定する。
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+          POST_INTERVAL_SEC: ${{ inputs.interval_sec }}
+          POST_COUNT: ${{ steps.targets.outputs.count }}
+          POST_STATUS: ${{ inputs.post_status }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          DRY_RUN_FLAG=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            DRY_RUN_FLAG="--dry-run"
+          fi
+
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status "$POST_STATUS" \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "${{ steps.targets.outputs.nos }}" \
+            --limit "$POST_COUNT" \
+            --sleep "$POST_INTERVAL_SEC" \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --fallback-media-id "$FALLBACK_MEDIA_ID" \
+            --output-dir "$RESULTS_DIR" \
+            $DRY_RUN_FLAG
+
+      - name: Update ledger with completed posts
+        # 途中で遮断されても、そこまでに公開できた分は管理簿へ反映する。
+        # 反映しないと次の実行が同じ記事をもう一度投稿しにいく。
+        if: always() && steps.targets.outputs.nos != '' && inputs.dry_run == false
+        env:
+          TARGET_NOS: ${{ steps.targets.outputs.nos }}
+          POST_STATUS: ${{ inputs.post_status }}
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          from pathlib import Path
+
+          ledger_path = Path(os.environ["LEDGER"])
+          with ledger_path.open(encoding="utf-8-sig", newline="") as handle:
+              reader = csv.DictReader(handle)
+              fieldnames = reader.fieldnames or []
+              ledger_rows = list(reader)
+
+          wanted = {value.strip() for value in os.environ.get("TARGET_NOS", "").split(",") if value.strip()}
+          files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          results = {}
+          if files:
+              with files[-1].open(encoding="utf-8-sig", newline="") as handle:
+                  for row in csv.DictReader(handle):
+                      no = str(row.get("no", "")).strip()
+                      if no in wanted:
+                          results[no] = row
+
+          now = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          posted_as_publish = os.environ.get("POST_STATUS", "publish") == "publish"
+          for row in ledger_rows:
+              no = str(row.get("No", "")).strip()
+              result = results.get(no)
+              if result is None:
+                  continue
+              status = (result.get("status") or "").strip().lower()
+              if status in {"posted", "updated"}:
+                  # draft / pending で投げた回を「公開済み」にすると、実際には
+                  # 下書きのままなのに次の実行が対象から外してしまう。
+                  row["投稿ステータス"] = "公開済み" if posted_as_publish else "下書き済み"
+                  row["WP投稿ID"] = result.get("post_id", "")
+                  row["WP投稿URL"] = result.get("post_link", "")
+                  row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or now
+                  row["エラー内容"] = ""
+              elif status in {"error", "skipped"}:
+                  row["エラー内容"] = result.get("error_content") or result.get("message") or status
+
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+          PY
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER"
+          if git diff --cached --quiet; then
+            echo "管理簿変更なし"
+          else
+            git commit -m "Update CyberNote publish status (batch)"
+            # 台帳を書いている間に main が進むと push が弾かれる。投稿は済んで
+            # いるのに台帳だけ未投稿のまま残ると、次の実行が同じ記事を投稿する。
+            pushed=0
+            for attempt in 1 2 3; do
+              if git push; then
+                pushed=1
+                break
+              fi
+              echo "pushが弾かれました。main を取り込んで再試行します（${attempt}/3）"
+              git pull --rebase origin main
+              sleep $(( attempt * 5 ))
+            done
+            if [ "$pushed" -ne 1 ]; then
+              echo "::error title=管理簿を更新できません::投稿は完了しましたが管理簿のpushに失敗しました。手動で投稿ステータスを更新してください"
+              exit 1
+            fi
+          fi
+
+      - name: Confirm every result
+        # draft / pending で投げた回は公開URLが付かないため確認しない。
+        if: always() && steps.targets.outputs.nos != '' && inputs.dry_run == false && inputs.post_status == 'publish'
+        env:
+          TARGET_NOS: ${{ steps.targets.outputs.nos }}
+        run: |
+          git fetch origin main
+          python - <<'PY'
+          import csv
+          import os
+          import subprocess
+          import sys
+
+          target = {value.strip() for value in os.environ["TARGET_NOS"].split(",") if value.strip()}
+          raw = subprocess.check_output(
+              ["git", "show", "origin/main:projects/cybernote-security-news/data/news_ledger.csv"]
+          ).decode("utf-8-sig")
+          rows = list(csv.DictReader(raw.splitlines()))
+          state = {
+              str(row.get("No", "")).strip(): (
+                  (row.get("投稿ステータス") or "").strip(),
+                  (row.get("WP投稿URL") or "").strip(),
+                  (row.get("エラー内容") or "").strip(),
+              )
+              for row in rows
+          }
+          failed = []
+          for no in sorted(target, key=int):
+              status, url, error = state.get(no, ("", "", "管理簿に行なし"))
+              print(f"No.{no}: {status or '未投稿'} {url or error}")
+              if status != "公開済み" or not url:
+                  failed.append(no)
+          if failed:
+              print(f"未完了: {','.join(failed)}", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybernote-batch-publish-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
