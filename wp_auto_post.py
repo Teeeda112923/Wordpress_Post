@@ -615,6 +615,17 @@ def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | No
     return first_existing(candidates)
 
 
+def is_truthy(value: Any) -> bool:
+    """フロントマターの真偽値を解釈する。
+
+    parse_front_matter() は値を文字列のまま返すため、true / yes / 1 を真とみなす。
+    表記ゆれで宣言が効かないと、まとめ記事が重複判定で止まって原因が分かりにくい。
+    """
+    if isinstance(value, bool):
+        return value
+    return safe_str(value).strip().lower() in {"true", "yes", "1", "on"}
+
+
 def find_image_file(images_dir: Path, slug: str, no_value: str, image_name: str) -> Path | None:
     """アイキャッチ画像を探索する。今後の標準は PNG。
 
@@ -2206,7 +2217,7 @@ def main() -> int:
             cng_meta = {}
             print(f"  [警告] GEO情報の組み立てに失敗しました: {exc}")
         # フロントマターは本文に出さない（区切り線として描画されるのを防ぐ）
-        _, md_text = geo_kit.parse_front_matter(md_text)
+        front_matter, md_text = geo_kit.parse_front_matter(md_text)
         # CyberNote短編ニュースではFAQと出典をGEO Kitが表示する。品質ゲートを
         # 経由しない手動投稿でも二重表示させないため、この領域に限って本文側の
         # 同義セクションを投稿直前に除去する（一般記事には適用しない）。
@@ -2247,7 +2258,18 @@ def main() -> int:
             # slug/title が変わっていても、同じCVEの別URLがあれば新規作成しない。
             # 「続報」は同一CVEの独立記事を意図しているため、slug/titleの冪等性のみ適用する。
             is_followup = "続報" in title or "followup" in slug.lower()
-            if not existing and not is_followup:
+            # まとめ記事は、個別記事があるCVEを複数まとめて扱うのが役目なので、
+            # CVEが一致する投稿があるのは正常。ここで止めると月例更新のまとめを
+            # 一切出せなくなる。フロントマターに roundup: true と書いて宣言する。
+            #
+            # 逆向き（個別記事を出すときに既存のまとめ記事と衝突する）は、
+            # _post_search_text() が本文を検索対象から外しているため起きない。
+            # まとめ記事の本文にCVEが並んでいても、slug/title/excerpt に無ければ
+            # 個別記事の重複とは判定されない。
+            is_roundup = is_truthy(front_matter.get("roundup"))
+            if is_roundup:
+                print("    まとめ記事のため、同一CVEによる重複判定を行いません（roundup: true）")
+            if not existing and not is_followup and not is_roundup:
                 cve_values = [
                     safe_str(cng_meta.get("_cng_cve")),
                     kw,
