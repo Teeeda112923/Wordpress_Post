@@ -1516,6 +1516,47 @@ class WordPressClient:
         data = self.request("DELETE", f"media/{media_id}", params={"force": "true"})
         return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
 
+    def find_media_uploaded_since(
+        self, filename: str, since: dt.datetime
+    ) -> tuple[int, str] | None:
+        """直前にアップロードされたメディアを、ファイル名の先頭一致で探す。
+
+        WordPress は同名ファイルに -1, -2 … と連番を付けるため、完全一致では
+        見つからない。since 以降に作られた中で最も新しいものを、いま送った画像と
+        みなす。
+        """
+        stem = Path(filename).stem
+        try:
+            data = self.request(
+                "GET",
+                "media",
+                params={
+                    "search": stem,
+                    "per_page": 20,
+                    "orderby": "date",
+                    "order": "desc",
+                    "context": "edit",
+                },
+            )
+        except Exception:
+            return None
+        if not isinstance(data, list):
+            return None
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            source_url = safe_str(item.get("source_url"))
+            if not source_url.rsplit("/", 1)[-1].startswith(stem):
+                continue
+            raw = safe_str(item.get("date_gmt"))
+            try:
+                created = dt.datetime.fromisoformat(raw).replace(tzinfo=dt.timezone.utc)
+            except ValueError:
+                continue
+            if created >= since:
+                return int(item.get("id") or 0), source_url
+        return None
+
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
         """画像をアップロードし (media_id, source_url) を返す。"""
         mime_type, _ = mimetypes.guess_type(str(image_path))
@@ -1527,13 +1568,51 @@ class WordPressClient:
         }
         # 遮断されたときの再試行で同じ本文を送り直せるよう、ファイルオブジェクトでは
         # なくバイト列を渡す（読み終わった後のファイルを再送すると中身が空になる）。
-        response = self.send(
-            "POST",
-            f"{self.api_base}/media",
-            headers=headers,
-            data=image_path.read_bytes(),
-            timeout=300,
-        )
+        payload = image_path.read_bytes()
+
+        # 大きなバイナリのアップロードは、WordPress側でファイルが作られていても
+        # 応答だけがWAFに503のHTMLへ差し替えられて返ることがある（実測）。
+        # これを失敗とみなして送り直すと、同じ画像がサイトに何枚も溜まる。
+        # 実際に No.32 のアイキャッチは、8月・9月の再試行で未使用メディアが
+        # 17件まで増えていた。まず作成済みかどうかを確認してから再試行する。
+        response = None
+        if not _blocked_reason:
+            since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=2)
+            first = self._send_once(
+                "POST",
+                f"{self.api_base}/media",
+                headers=headers,
+                data=payload,
+                timeout=300,
+            )
+            if not detect_block(first):
+                response = first
+            else:
+                print(f"  応答の詳細: {response_hint(first)}", flush=True)
+                landed = self.find_media_uploaded_since(image_path.name, since)
+                if landed and landed[0]:
+                    media_id, source_url = landed
+                    print(
+                        "  アップロードの応答は遮断されましたが、メディアは作成済みでした"
+                        f"（id={media_id}）。送り直さずにこれを使います",
+                        flush=True,
+                    )
+                    if alt_text:
+                        try:
+                            self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
+                        except Exception as exc:
+                            print(f"  [警告] 代替テキストを設定できませんでした: {exc}", flush=True)
+                    return media_id, source_url
+                print("  メディアは作成されていませんでした。通常の再試行に入ります", flush=True)
+
+        if response is None:
+            response = self.send(
+                "POST",
+                f"{self.api_base}/media",
+                headers=headers,
+                data=payload,
+                timeout=300,
+            )
         if response.status_code >= 400:
             raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
         media = response.json()
