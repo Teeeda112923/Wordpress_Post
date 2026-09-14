@@ -91,7 +91,7 @@ jobs:
               "スラッグ": "ransomware-infection-routes",
               "メタディスクリプション": "ランサムウェアの感染経路を警察庁の統計で解説します。VPN機器が66.3%で最多、リモートデスクトップと合わせ約87%。7つの侵入経路と手口、感染経路の特定方法、経路別の対策の優先順位までまとめました。",
               "WPカテゴリ": "サイバーセキュリティ",
-              "タグ案": "ランサムウェア,VPN,リモートデスクトップ,サイバー攻撃,情報セキュリティ",
+              "タグ案": "",
               "記事ファイル": "projects/cybernote-security-news/articles/ransomware-infection-routes.md",
               "画像ファイル名": "projects/cybernote-security-news/eyecatches/ransomware-infection-routes.png",
               "主な出典URL": "https://www.npa.go.jp/publications/statistics/cybersecurity/data/R7/R07_cyber_jousei.pdf",
