@@ -1,0 +1,159 @@
+name: Publish Ransomware Infection Routes
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-ransomware-infection-routes.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SLUG: ransomware-infection-routes
+      ARTICLE: projects/cybernote-security-news/articles/ransomware-infection-routes.md
+      IMAGE: projects/cybernote-security-news/eyecatches/ransomware-infection-routes.png
+      IMAGE_DIR: projects/cybernote-security-news/eyecatches
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate article and eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          from PIL import Image
+
+          article = Path("projects/cybernote-security-news/articles/ransomware-infection-routes.md")
+          image = Path("projects/cybernote-security-news/eyecatches/ransomware-infection-routes.png")
+          text = article.read_text(encoding="utf-8")
+
+          if not text.startswith("---\n"):
+              raise SystemExit("YAML front matter is missing")
+          for key in ("answer:", "cve:", "faq:", "sources:"):
+              if key not in text.split("---", 2)[1]:
+                  raise SystemExit(f"front matter key is missing: {key}")
+          if "# ランサムウェアの感染経路ランキング｜VPNが66%を占める理由と経路別の対策" not in text:
+              raise SystemExit("expected H1 is missing")
+          if "内部リンク候補" in text:
+              raise SystemExit("unresolved internal-link placeholder remains")
+          if len(re.findall(r"https://www\.cybernote\.click/", text)) < 3:
+              raise SystemExit("fewer than three CyberNote internal links")
+
+          with Image.open(image) as im:
+              im.load()
+              if im.format != "PNG" or im.size != (1200, 800) or im.mode != "RGB":
+                  raise SystemExit(f"invalid eyecatch: format={im.format} size={im.size} mode={im.mode}")
+          print("Article metadata, internal links, and 1200x800 RGB PNG are valid.")
+          PY
+
+      - name: Create one-off ledger
+        run: |
+          python - <<'PY'
+          import csv
+
+          fields = [
+              "No", "収集日", "公開予定日", "記事分類", "指定KW", "話題性スコア",
+              "記事タイトル案", "記事タイトル", "スラッグ", "メタディスクリプション",
+              "WPカテゴリ", "タグ案", "記事ファイル", "画像ファイル名", "主な出典URL",
+              "内部リンクURL", "目標文字数", "生成ステータス", "レビュー判定", "公開停止",
+              "WP投稿ID", "WP投稿URL", "投稿ステータス", "最終更新日時", "エラー内容", "候補ID",
+          ]
+          row = {
+              "No": "9001",
+              "収集日": "2026-09-14",
+              "公開予定日": "2026-09-14",
+              "記事分類": "ランサムウェア対策",
+              "指定KW": "ランサムウェア 感染経路",
+              "話題性スコア": "98",
+              "記事タイトル案": "ランサムウェアの感染経路ランキング｜VPNが66%を占める理由と経路別の対策",
+              "記事タイトル": "ランサムウェアの感染経路ランキング｜VPNが66%を占める理由と経路別の対策",
+              "スラッグ": "ransomware-infection-routes",
+              "メタディスクリプション": "ランサムウェアの感染経路を警察庁の統計で解説します。VPN機器が66.3%で最多、リモートデスクトップと合わせ約87%。7つの侵入経路と手口、感染経路の特定方法、経路別の対策の優先順位までまとめました。",
+              "WPカテゴリ": "サイバーセキュリティ",
+              "タグ案": "ランサムウェア,VPN,リモートデスクトップ,サイバー攻撃,情報セキュリティ",
+              "記事ファイル": "projects/cybernote-security-news/articles/ransomware-infection-routes.md",
+              "画像ファイル名": "projects/cybernote-security-news/eyecatches/ransomware-infection-routes.png",
+              "主な出典URL": "https://www.npa.go.jp/publications/statistics/cybersecurity/data/R7/R07_cyber_jousei.pdf",
+              "内部リンクURL": "https://www.cybernote.click/2026/09/13/paloalto-globalprotect-cve-2026-0257-auth-bypass/",
+              "目標文字数": "9300",
+              "生成ステータス": "生成済み",
+              "レビュー判定": "レビュー済み",
+              "候補ID": "ransomware-routes-20260914",
+          }
+          with open("/tmp/ransomware-routes-ledger.csv", "w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
+              writer.writeheader()
+              writer.writerow(row)
+          PY
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python wp_auto_post.py \
+            --input /tmp/ransomware-routes-ledger.csv \
+            --articles-dir projects/cybernote-security-news/articles \
+            --images-dir "$IMAGE_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "9001" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --output-dir /tmp/ransomware-routes-results
+
+      - name: Confirm publish result
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          files = sorted(Path("/tmp/ransomware-routes-results").glob("*.csv"))
+          if not files:
+              raise SystemExit("WordPress result CSV was not created")
+          rows = list(csv.DictReader(files[-1].open(encoding="utf-8-sig", newline="")))
+          row = next((item for item in rows if str(item.get("no", "")).strip() == "9001"), None)
+          if row is None:
+              raise SystemExit("No.9001 result was not found")
+          status = (row.get("status") or "").strip().lower()
+          if status not in {"posted", "updated"}:
+              detail = row.get("error_content") or row.get("message") or status
+              raise SystemExit(f"WordPress publish failed: {detail}")
+          print(f"status={status}")
+          print(f"post_id={row.get('post_id', '')}")
+          print(f"post_link={row.get('post_link', '')}")
+          PY
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ransomware-infection-routes-result
+          path: /tmp/ransomware-routes-results/*.csv
+          if-no-files-found: warn
+          retention-days: 30
