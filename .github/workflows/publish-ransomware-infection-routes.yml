@@ -1,4 +1,5 @@
 name: Publish Ransomware Infection Routes
+# One-off evergreen roundup publication workflow.
 
 on:
   push:
