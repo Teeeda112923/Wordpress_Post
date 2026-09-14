@@ -124,6 +124,7 @@ jobs:
             --nos "9001" \
             --limit 1 \
             --skip-auth-check \
+            --slug-only-existing-check \
             --skip-internal-link-resolution \
             --output-dir /tmp/ransomware-routes-results
 
