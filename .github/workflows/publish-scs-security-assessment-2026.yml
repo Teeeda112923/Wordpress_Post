@@ -1,0 +1,164 @@
+name: Publish SCS Security Assessment 2026
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/publish-scs-security-assessment-2026.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      SLUG: scs-security-assessment-2026
+      ARTICLE: projects/cybernote-security-news/articles/scs-security-assessment-2026.md
+      IMAGE: projects/cybernote-security-news/eyecatches/scs-security-assessment-2026.png
+      IMAGE_DIR: projects/cybernote-security-news/eyecatches
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Validate article and eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          from PIL import Image
+
+          article = Path("projects/cybernote-security-news/articles/scs-security-assessment-2026.md")
+          image = Path("projects/cybernote-security-news/eyecatches/scs-security-assessment-2026.png")
+          text = article.read_text(encoding="utf-8")
+
+          if not text.startswith("---\n"):
+              raise SystemExit("YAML front matter is missing")
+          front = text.split("---", 2)[1]
+          for key in ("answer:", "cve:", "roundup:", "faq:", "sources:"):
+              if key not in front:
+                  raise SystemExit(f"front matter key is missing: {key}")
+          if "# セキュリティ対策評価制度とは？2026年9月時点の最新動向と★3・★4の違い" not in text:
+              raise SystemExit("expected H1 is missing")
+          if "内部リンク候補" in text:
+              raise SystemExit("unresolved internal-link placeholder remains")
+          if len(re.findall(r"https://www\.cybernote\.click/", text)) < 3:
+              raise SystemExit("fewer than three CyberNote internal links")
+
+          with Image.open(image) as im:
+              im.load()
+              if im.format != "PNG" or im.size != (1200, 800) or im.mode != "RGB":
+                  raise SystemExit(f"invalid eyecatch: format={im.format} size={im.size} mode={im.mode}")
+          print("Article metadata, internal links, and 1200x800 RGB PNG are valid.")
+          PY
+
+      - name: Create one-off ledger
+        run: |
+          python - <<'PY'
+          import csv
+
+          fields = [
+              "No", "収集日", "公開予定日", "記事分類", "指定KW", "話題性スコア",
+              "記事タイトル案", "記事タイトル", "スラッグ", "メタディスクリプション",
+              "WPカテゴリ", "タグ案", "記事ファイル", "画像ファイル名", "画像alt",
+              "主な出典URL", "内部リンクURL", "目標文字数", "生成ステータス",
+              "レビュー判定", "公開停止", "WP投稿ID", "WP投稿URL",
+              "投稿ステータス", "最終更新日時", "エラー内容", "候補ID",
+          ]
+          row = {
+              "No": "9002",
+              "収集日": "2026-09-14",
+              "公開予定日": "2026-09-14",
+              "記事分類": "制度・ガイドライン",
+              "指定KW": "セキュリティ対策評価制度",
+              "話題性スコア": "98",
+              "記事タイトル案": "セキュリティ対策評価制度とは？2026年9月時点の最新動向と★3・★4の違い",
+              "記事タイトル": "セキュリティ対策評価制度とは？2026年9月時点の最新動向と★3・★4の違い",
+              "スラッグ": "scs-security-assessment-2026",
+              "メタディスクリプション": "セキュリティ対策評価制度の全体像を2026年9月時点の一次情報で整理しました。★3と★4の要求事項数や評価スキーム、有効期間の違いに加えて、いつから始まるのか、義務なのか、対象企業はどこまでかまで解説します。",
+              "WPカテゴリ": "サイバーセキュリティ",
+              "タグ案": "",
+              "記事ファイル": "projects/cybernote-security-news/articles/scs-security-assessment-2026.md",
+              "画像ファイル名": "projects/cybernote-security-news/eyecatches/scs-security-assessment-2026.png",
+              "画像alt": "セキュリティ対策評価制度の★3自己評価26項目と★4第三者評価43項目の比較",
+              "主な出典URL": "https://www.ipa.go.jp/security/scs/index.html",
+              "内部リンクURL": "https://www.cybernote.click/2026/09/11/scs-security-evaluation-checklist/",
+              "目標文字数": "5900",
+              "生成ステータス": "生成済み",
+              "レビュー判定": "レビュー済み",
+              "候補ID": "scs-assessment-20260914",
+          }
+          with open("/tmp/scs-assessment-ledger.csv", "w", encoding="utf-8-sig", newline="") as handle:
+              writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
+              writer.writeheader()
+              writer.writerow(row)
+          PY
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python wp_auto_post.py \
+            --input /tmp/scs-assessment-ledger.csv \
+            --articles-dir projects/cybernote-security-news/articles \
+            --images-dir "$IMAGE_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "9002" \
+            --limit 1 \
+            --skip-auth-check \
+            --slug-only-existing-check \
+            --skip-internal-link-resolution \
+            --output-dir /tmp/scs-assessment-results
+
+      - name: Confirm publish result
+        run: |
+          python - <<'PY'
+          import csv
+          from pathlib import Path
+
+          files = sorted(Path("/tmp/scs-assessment-results").glob("*.csv"))
+          if not files:
+              raise SystemExit("WordPress result CSV was not created")
+          rows = list(csv.DictReader(files[-1].open(encoding="utf-8-sig", newline="")))
+          row = next((item for item in rows if str(item.get("no", "")).strip() == "9002"), None)
+          if row is None:
+              raise SystemExit("No.9002 result was not found")
+          status = (row.get("status") or "").strip().lower()
+          if status not in {"posted", "updated"}:
+              detail = row.get("error_content") or row.get("message") or status
+              raise SystemExit(f"WordPress publish failed: {detail}")
+          print(f"status={status}")
+          print(f"post_id={row.get('post_id', '')}")
+          print(f"post_link={row.get('post_link', '')}")
+          PY
+
+      - name: Upload result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scs-security-assessment-2026-result
+          path: /tmp/scs-assessment-results/*.csv
+          if-no-files-found: warn
+          retention-days: 30
+
