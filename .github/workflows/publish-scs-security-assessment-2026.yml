@@ -214,6 +214,7 @@ jobs:
             --skip-auth-check \
             --slug-only-existing-check \
             --skip-internal-link-resolution \
+            --force-image-upload \
             --output-dir /tmp/scs-assessment-results
 
       - name: Confirm publish result
