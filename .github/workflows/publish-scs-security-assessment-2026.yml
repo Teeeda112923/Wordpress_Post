@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   publish:
@@ -35,6 +35,79 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+
+      - name: Generate editorial eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          W, H = 1200, 800
+          BG = '#0B1F33'
+          PANEL = '#102A43'
+          WHITE = '#F7FAFC'
+          MUTED = '#B7C7D6'
+          CYAN = '#22D3EE'
+          GREEN = '#34D399'
+
+          regular = '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          bold = '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+
+          def font(path, size):
+              return ImageFont.truetype(path, size, index=0)
+
+          f12 = font(regular, 24)
+          f16 = font(regular, 26)
+          f18 = font(regular, 30)
+          f24 = font(bold, 38)
+          f32 = font(bold, 54)
+          f44 = font(bold, 68)
+          f56 = font(bold, 82)
+
+          image = Image.new('RGB', (W, H), BG)
+          draw = ImageDraw.Draw(image)
+
+          for x in (70, 735, 1130):
+              draw.line((x, 58, x, 742), fill='#173550', width=1)
+          draw.line((70, 742, 1130, 742), fill='#284760', width=2)
+
+          draw.text((78, 72), 'CYBERNOTE  |  2026.09', font=f12, fill=CYAN)
+          draw.text((75, 150), 'セキュリティ対策', font=f44, fill=WHITE)
+          draw.text((75, 235), '評価制度', font=f56, fill=WHITE)
+          draw.rounded_rectangle((78, 348, 120, 355), radius=3, fill=GREEN)
+          draw.text((78, 382), '★3・★4の要求事項と評価基準', font=f24, fill=MUTED)
+          draw.text((78, 438), '一次情報で整理', font=f24, fill=WHITE)
+          draw.multiline_text(
+              (78, 590),
+              '2027年3月頃の運用開始に向けて準備が進む\nSCS評価制度を、数字と評価方法で比較。',
+              font=f18, fill=MUTED, spacing=13,
+          )
+          draw.text((78, 704), 'KEYWORD  セキュリティ対策評価制度', font=f12, fill='#7890A6')
+          draw.text((785, 78), 'SCS 評価制度', font=f18, fill=MUTED)
+
+          def card(y, star, req, criteria, label1, label2, accent):
+              x1, x2 = 760, 1120
+              y1, y2 = y, y + 245
+              draw.rounded_rectangle((x1, y1, x2, y2), radius=22, fill=PANEL, outline='#25455F', width=2)
+              draw.rounded_rectangle((x1 + 24, y1 + 24, x1 + 120, y1 + 74), radius=12, fill=accent)
+              draw.text((x1 + 46, y1 + 31), star, font=f24, fill=BG)
+              draw.text((x1 + 145, y1 + 21), label1, font=f16, fill=WHITE)
+              draw.text((x1 + 145, y1 + 51), label2, font=f16, fill=MUTED)
+              draw.text((x1 + 28, y1 + 103), str(req), font=f56, fill=WHITE)
+              draw.text((x1 + 150, y1 + 123), '要求事項', font=f18, fill=MUTED)
+              draw.line((x1 + 28, y1 + 177, x2 - 28, y1 + 177), fill='#31526A', width=2)
+              draw.text((x1 + 28, y1 + 190), str(criteria), font=f32, fill=accent)
+              draw.text((x1 + 135, y1 + 199), '評価基準', font=f18, fill=MUTED)
+
+          card(140, '★3', 26, 81, '自己評価', '＋専門家確認', GREEN)
+          card(430, '★4', 43, 153, '第三者評価', '＋技術検証', CYAN)
+
+          path = Path('projects/cybernote-security-news/eyecatches/scs-security-assessment-2026.png')
+          image.save(path, format='PNG', optimize=True)
+          print(f'generated={path} bytes={path.stat().st_size}')
+          PY
 
       - name: Validate article and eyecatch
         run: |
@@ -53,7 +126,7 @@ jobs:
           for key in ("answer:", "cve:", "roundup:", "faq:", "sources:"):
               if key not in front:
                   raise SystemExit(f"front matter key is missing: {key}")
-          if "# セキュリティ対策評価制度とは？2026年9月時点の最新動向と★3・★4の違い" not in text:
+          if "# セキュリティ対策評価制度とは？★3・★4の要求事項と評価基準153項目を一次情報で整理" not in text:
               raise SystemExit("expected H1 is missing")
           if "内部リンク候補" in text:
               raise SystemExit("unresolved internal-link placeholder remains")
@@ -66,6 +139,18 @@ jobs:
                   raise SystemExit(f"invalid eyecatch: format={im.format} size={im.size} mode={im.mode}")
           print("Article metadata, internal links, and 1200x800 RGB PNG are valid.")
           PY
+
+      - name: Save regenerated eyecatch to repository
+        run: |
+          if git diff --quiet -- "$IMAGE"; then
+            echo "Eyecatch is unchanged."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add "$IMAGE"
+            git commit -m "Regenerate SCS assessment eyecatch"
+            git push origin HEAD:main
+          fi
 
       - name: Create one-off ledger
         run: |
@@ -82,26 +167,26 @@ jobs:
           ]
           row = {
               "No": "9002",
-              "収集日": "2026-09-14",
-              "公開予定日": "2026-09-14",
+              "収集日": "2026-09-16",
+              "公開予定日": "2026-09-16",
               "記事分類": "制度・ガイドライン",
               "指定KW": "セキュリティ対策評価制度",
               "話題性スコア": "98",
-              "記事タイトル案": "セキュリティ対策評価制度とは？2026年9月時点の最新動向と★3・★4の違い",
-              "記事タイトル": "セキュリティ対策評価制度とは？2026年9月時点の最新動向と★3・★4の違い",
+              "記事タイトル案": "セキュリティ対策評価制度とは？★3・★4の要求事項と評価基準153項目を一次情報で整理",
+              "記事タイトル": "セキュリティ対策評価制度とは？★3・★4の要求事項と評価基準153項目を一次情報で整理",
               "スラッグ": "scs-security-assessment-2026",
-              "メタディスクリプション": "セキュリティ対策評価制度の全体像を2026年9月時点の一次情報で整理しました。★3と★4の要求事項数や評価スキーム、有効期間の違いに加えて、いつから始まるのか、義務なのか、対象企業はどこまでかまで解説します。",
+              "メタディスクリプション": "セキュリティ対策評価制度（SCS評価制度）の要求事項と評価基準を2026年9月時点の一次情報で整理。★3は26件81項目、★4は43件153項目。両者を分ける17の要求事項、費用の考え方、申請の流れまで解説します。",
               "WPカテゴリ": "サイバーセキュリティ",
-              "タグ案": "",
+              "タグ案": "SCS評価制度,サプライチェーン,IPA,経済産業省,NIST CSF",
               "記事ファイル": "projects/cybernote-security-news/articles/scs-security-assessment-2026.md",
               "画像ファイル名": "projects/cybernote-security-news/eyecatches/scs-security-assessment-2026.png",
-              "画像alt": "セキュリティ対策評価制度の★3自己評価26項目と★4第三者評価43項目の比較",
+              "画像alt": "セキュリティ対策評価制度の★3・★4について要求事項26件・43件と評価基準81項目・153項目を比較した図",
               "主な出典URL": "https://www.ipa.go.jp/security/scs/index.html",
               "内部リンクURL": "https://www.cybernote.click/2026/09/11/scs-security-evaluation-checklist/",
-              "目標文字数": "5900",
+              "目標文字数": "15000",
               "生成ステータス": "生成済み",
               "レビュー判定": "レビュー済み",
-              "候補ID": "scs-assessment-20260914",
+              "候補ID": "scs-assessment-20260916",
           }
           with open("/tmp/scs-assessment-ledger.csv", "w", encoding="utf-8-sig", newline="") as handle:
               writer = csv.DictWriter(handle, fieldnames=fields, lineterminator="\n")
@@ -161,4 +246,3 @@ jobs:
           path: /tmp/scs-assessment-results/*.csv
           if-no-files-found: warn
           retention-days: 30
-
