@@ -1,0 +1,103 @@
+name: Publish requested Cisco security articles
+on:
+  push:
+    paths:
+      - '.github/workflows/cybernote-cisco-urgent.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: contains(github.event.head_commit.message, 'Run requested Cisco publication') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUNBUFFERED: '1'
+      WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+      WP_USERNAME: ${{ secrets.WP_USERNAME }}
+      WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+      WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+      WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt
+      - name: Quality gates
+        run: |
+          python article_quality_check.py --input projects/cybernote-security-news/data/news_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/quality.csv --nos 108,113 --include-unstarted --mode geo --fail-on-error
+          python geo_article_quality_check.py --input projects/cybernote-security-news/data/news_ledger.csv --articles-dir projects/cybernote-security-news/articles --results /tmp/geo.csv --nos 108,113 --include-unstarted --mode geo --fail-on-error
+      - name: Update existing Email Gateway post
+        run: >-
+          python wp_auto_post.py --input projects/cybernote-security-news/data/news_ledger.csv
+          --articles-dir projects/cybernote-security-news/articles
+          --images-dir projects/cybernote-security-news/eyecatches
+          --post-status publish --write-mode update_only --nos 108 --limit 1
+          --skip-auth-check --skip-internal-link-resolution --category サイバーセキュリティ
+          --output-dir /tmp/cisco108
+      - name: Publish ISE with duplicate checks
+        run: >-
+          python wp_auto_post.py --input projects/cybernote-security-news/data/news_ledger.csv
+          --articles-dir projects/cybernote-security-news/articles
+          --images-dir projects/cybernote-security-news/eyecatches
+          --post-status publish --write-mode upsert --nos 113 --limit 1
+          --skip-auth-check --skip-internal-link-resolution --category サイバーセキュリティ
+          --output-dir /tmp/cisco113
+      - name: Verify publication and record only successful results
+        if: always()
+        run: |
+          python - <<'PY'
+          import csv,io,os,json,requests
+          from pathlib import Path
+          from wp_auto_post import WordPressClient
+          wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          p=Path('projects/cybernote-security-news/data/news_ledger.csv')
+          text=p.read_text(encoding='utf-8-sig'); fields=next(csv.reader(io.StringIO(text)))
+          lines=text.splitlines(keepends=True); failed=False
+          for no in ['108','113']:
+              files=sorted(Path('/tmp/cisco'+no).glob('results_*.csv'))
+              if not files:
+                  print('Missing result',no);failed=True;continue
+              result=list(csv.DictReader(files[-1].open(encoding='utf-8-sig')))[-1]
+              if result['status'] not in ['posted','updated']:
+                  print('Publish failed',no,result.get('error_content'),result.get('message'));failed=True;continue
+              post=wp.request('GET','posts/'+str(result['post_id']))
+              assert post['status']=='publish' and post['featured_media']
+              if no=='108': assert post['id']==8150
+              media=wp.request('GET','media/'+str(post['featured_media']))
+              public=requests.get(post['link'],timeout=60);assert public.status_code==200
+              assert ('CVE-2026-76461' if no=='108' else 'CVE-2026-76460') in public.text
+              if no=='108': assert 'SSH' in public.text
+              assert '<table' in public.text
+              same=wp.request('GET','posts',params={'slug':post['slug'],'status':'publish'})
+              assert len(same)==1
+              print(json.dumps({'no':no,'id':post['id'],'url':post['link'],'status':post['status'],'title':post['title']['rendered'],'featured_media':post['featured_media'],'media_url':media['source_url'],'date':post['date'],'modified':post['modified'],'http':public.status_code,'duplicates':len(same)},ensure_ascii=False))
+              for i,line in enumerate(lines):
+                  row=dict(zip(fields,next(csv.reader([line]))))
+                  if row.get('No')==no:
+                      row.update({'WP投稿ID':str(post['id']),'WP投稿URL':post['link'],'投稿ステータス':'公開済み','最終更新日時':post['modified'].replace('T',' '),'エラー内容':''})
+                      s=io.StringIO();w=csv.DictWriter(s,fieldnames=fields,lineterminator='\n');w.writerow(row);lines[i]=s.getvalue();break
+          p.write_text(''.join(lines),encoding='utf-8-sig')
+          Path('/tmp/cisco-failed').write_text(str(failed))
+          PY
+      - name: Save verified ledger results
+        if: always()
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add projects/cybernote-security-news/data/news_ledger.csv
+          if ! git diff --cached --quiet; then
+            git commit -m 'Record verified Cisco article publication and update'
+            git pull --rebase origin main
+            git push
+          fi
+          test -f /tmp/cisco-failed && test "$(cat /tmp/cisco-failed)" = False
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cisco-publication-results
+          path: /tmp/cisco*/*.csv
