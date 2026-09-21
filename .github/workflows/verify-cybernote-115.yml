@@ -1,0 +1,56 @@
+name: Verify CyberNote 115
+on:
+  push:
+    paths:
+      - ".github/workflows/verify-cybernote-115.yml"
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify WordPress publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          UA="Mozilla/5.0 CyberNotePublicationVerifier/1.0"
+          BASE="https://www.cybernote.click"
+          SLUG="microsoft-edge-cve-2026-88097-privilege-escalation-update"
+          PAGE="$BASE/2026/09/21/$SLUG/"
+          CODE="$(curl -L -A "$UA" -sS -o page.html -w "%{http_code}" "$PAGE")"
+          test "$CODE" = "200"
+          grep -q "Microsoft Edge" page.html
+          grep -q "CVE-2026-88097" page.html
+          grep -q "<table" page.html
+          curl -L -A "$UA" -fsS "$BASE/wp-json/wp/v2/posts?slug=$SLUG&context=view" -o post.json
+          python - <<'PY'
+          import json, html, urllib.request
+          from pathlib import Path
+          posts=json.loads(Path("post.json").read_text())
+          assert len(posts)==1, f"duplicate count={len(posts)}"
+          post=posts[0]
+          assert post["status"]=="publish"
+          title=html.unescape(post["title"]["rendered"])
+          expected="【重要】Microsoft EdgeにCVSS 8.1、153.0.4234.48へ更新を"
+          assert title==expected, (title, expected)
+          assert "CVE-2026-88097" in post["content"]["rendered"]
+          assert "<table" in post["content"]["rendered"]
+          mid=post["featured_media"]
+          assert mid
+          req=urllib.request.Request(f"https://www.cybernote.click/wp-json/wp/v2/media/{mid}",headers={"User-Agent":"Mozilla/5.0 CyberNotePublicationVerifier/1.0"})
+          media=json.load(urllib.request.urlopen(req))
+          src=media["source_url"]
+          req=urllib.request.Request(src,headers={"User-Agent":"Mozilla/5.0 CyberNotePublicationVerifier/1.0"})
+          data=urllib.request.urlopen(req).read()
+          Path("featured-image").write_bytes(data)
+          print(json.dumps({"count":len(posts),"post_id":post["id"],"status":post["status"],"title":title,"url":post["link"],"featured_media":mid,"media_url":src,"media_bytes":len(data)},ensure_ascii=False))
+          PY
+          python - <<'PY'
+          from PIL import Image
+          with Image.open("featured-image") as im:
+              im.load()
+              assert im.size==(1200,800), im.size
+              print({"image_format":im.format,"size":im.size,"mode":im.mode})
+          PY
+      - uses: actions/setup-python@v5
+        if: failure()
+        with:
+          python-version: "3.12"
