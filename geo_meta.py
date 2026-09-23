@@ -516,7 +516,8 @@ def build_geo_meta(
     cve_list: list[str] = []
     if isinstance(raw_cve, str) and raw_cve.strip():
         cve_list = [c.strip() for c in raw_cve.split(",") if c.strip()]
-    if not cve_list:
+    # An explicitly empty cve: must not inherit CVEs from unrelated links.
+    if not cve_list and "cve" not in front:
         cve_list = extract_cves(f"{cve_hint} {slug} {body}")
 
     # --- FAQ --------------------------------------------------------------

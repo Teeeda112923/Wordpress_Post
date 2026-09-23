@@ -105,6 +105,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # One-time repair before independently publishing AWS NATO article.
+      - name: Restore original OpenSearch article
+        if: github.event_name == 'push'
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: python projects/cybernote-security-news/src/restore_opensearch_post_7573.py
+
       # One-off: create the editorial-style NATO banner using Noto Sans CJK,
       # commit its checked 1200x800 PNG, then publish the prepared article.
       - name: Generate AWS NATO editorial eyecatch

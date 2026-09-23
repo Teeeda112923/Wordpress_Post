@@ -2350,7 +2350,9 @@ def main() -> int:
                 print("    まとめ記事のため、同一CVEによる重複判定を行いません（roundup: true）")
             if not existing and not is_followup and not is_roundup:
                 cve_values = [
-                    safe_str(cng_meta.get("_cng_cve")),
+                    # A declared cve: (including blank) is authoritative.
+                    safe_str(front_matter.get("cve")) if "cve" in front_matter
+                    else safe_str(cng_meta.get("_cng_cve")),
                     kw,
                     title,
                     slug,

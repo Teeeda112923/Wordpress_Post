@@ -203,7 +203,7 @@ NATOの仕組みは、まず情報を機密度で分類し、区分ごとに必�
 欧州では、データの保存場所や運用主体を自国・自地域の管理下に置くデータ主権への関心が高まっています。AWSも2026年1月、EU域内で独立して運用するソブリンクラウドであるAWS European Sovereign Cloudの提供を始めました。今回の承認はこれとは別の取り組みですが、クラウドの利便性と国家の管理をどう両立させるかという同じ論点の上にあります。evrocのように欧州の事業者が防衛向けのクラウドを打ち出す動きもあり、選択肢は今後さらに広がると考えられます。
 
 
-関連記事として、[AWS管理サービスのセキュリティ確認事例](https://www.cybernote.click/2026/08/25/amazon-opensearch-cve-2026-77811-stored-xss/)、[セキュリティ対策評価制度のチェックリスト](https://www.cybernote.click/2026/09/11/scs-security-evaluation-checklist/)、[同制度の最新動向と第三者評価](https://www.cybernote.click/2026/09/14/scs-security-assessment-2026/)も紹介しています。
+関連記事として、[AWSのクラウドセキュリティ解説](https://www.cybernote.click/2026/07/02/aws%E3%81%8C%E9%80%B2%E3%82%81%E3%82%8B%E3%82%AF%E3%83%A9%E3%82%A6%E3%83%89%E3%82%BB%E3%82%AD%E3%83%A5%E3%83%AA%E3%83%86%E3%82%A3%E3%81%AE%E5%8A%B9%E7%8E%87%E5%8C%96%E3%81%A8%E3%81%AF%EF%BC%9F2025/)、[セキュリティ対策評価制度のチェックリスト](https://www.cybernote.click/2026/09/11/scs-security-evaluation-checklist/)、[同制度の最新動向と第三者評価](https://www.cybernote.click/2026/09/14/scs-security-assessment-2026/)も紹介しています。
 
 ## まとめ
 
