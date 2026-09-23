@@ -29,9 +29,6 @@ name: CyberNote Security News
 # 当日分を最優先とし、空振りする枠だけを取りこぼしの回収に充てる。
 # さかのぼる範囲は鮮度で決める。日付を明示した手動実行ではさかのぼらない。
 on:
-  push:
-    paths:
-      - "projects/cybernote-security-news/.aws-nato-publish-once"
   schedule:
     # 09:00 JST
     - cron: "0 0 * * *"
@@ -104,36 +101,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-
-      # One-time repair before independently publishing AWS NATO article.
-      - name: Restore original OpenSearch article
-        if: github.event_name == 'push'
-        env:
-          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
-          WP_USERNAME: ${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
-          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
-          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
-          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
-        run: python projects/cybernote-security-news/src/restore_opensearch_post_7573.py
-
-      # One-off: create the editorial-style NATO banner using Noto Sans CJK,
-      # commit its checked 1200x800 PNG, then publish the prepared article.
-      - name: Generate AWS NATO editorial eyecatch
-        if: github.event_name == 'push'
-        run: |
-          if [ ! -f "projects/cybernote-security-news/eyecatches/aws-nato-restricted-d32-approval-2026.png" ]; then
-            if ! fc-match 'Noto Sans JP' | grep -qi 'NotoSansCJK'; then
-              sudo apt-get update -qq
-              sudo apt-get install -y -qq --no-install-recommends fonts-noto-cjk
-            fi
-            python projects/cybernote-security-news/src/create_aws_nato_eyecatch.py --output "projects/cybernote-security-news/eyecatches/aws-nato-restricted-d32-approval-2026.png"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add "projects/cybernote-security-news/eyecatches/aws-nato-restricted-d32-approval-2026.png"
-            git commit -m "Add AWS NATO editorial eyecatch"
-            git push origin HEAD:main
-          fi
 
       - name: Run CyberNote regression tests
         run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'

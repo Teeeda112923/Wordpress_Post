@@ -41,6 +41,8 @@ PRIMARY_SOURCE_DOMAINS = (
     "cve.org",
     "mitre.org",
     "first.org",
+    # Primary issuer publications for non-CVE security and public-sector news.
+    "aboutamazon.com", "aws.amazon.com", "nato.int",
 )
 
 # ドメイン → 発行元の表示名（publisher 未指定時の補完に使う）
@@ -59,6 +61,9 @@ _PUBLISHER_BY_DOMAIN = (
     ("apple.com", "Apple"),
     ("google.com", "Google"),
     ("adobe.com", "Adobe"),
+    ("aboutamazon.com", "Amazon"),
+    ("aws.amazon.com", "AWS"),
+    ("nato.int", "NATO"),
     ("oracle.com", "Oracle"),
     ("cisco.com", "Cisco"),
     ("checkpoint.com", "Check Point"),
