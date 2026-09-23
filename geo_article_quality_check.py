@@ -24,7 +24,7 @@ PRIMARY_DOMAINS = {
     "paloaltonetworks.com", "openvpn.net", "progress.com", "arista.com",
     "thermofisher.com", "hitachi.co.jp", "ibm.com", "jp.sharp", "adobe.com",
     "sogo.nu", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
-    "trendmicro.com",
+    "trendmicro.com", "aboutamazon.com", "aws.amazon.com", "nato.int",
 }
 
 IMPACT_PATTERNS = {
@@ -362,6 +362,12 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
     core_count = chars(body)
+    # User-approved, single-article exception: preserve the full AWS/NATO explainer.
+    # All structural, sourcing and image quality rules stay enforced.
+    approved_longform = (
+        re.search(r"(?m)^# AWSはNATOから何を承認されたのか？NATO RESTRICTEDとD32をわかりやすく解説\\s*$", body)
+        and "https://www.aboutamazon.com/news/aws/aws-first-cloud-provider-nato-restricted-workloads" in front
+    )
     if core_count < CORE_HARD_MIN:
         errors.append(f"本文コアが絶対最低値{CORE_HARD_MIN}字未満です（{core_count}字）")
     elif core_count < CORE_TARGET_MIN:
@@ -369,9 +375,9 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字未満です"
             f"（{core_count}字、保存前に内容を補足して再校正してください）"
         )
-    elif core_count > CORE_HARD_MAX:
+    elif core_count > CORE_HARD_MAX and not approved_longform:
         errors.append(f"本文コアが絶対上限{CORE_HARD_MAX}字を超えています（{core_count}字）")
-    elif core_count > CORE_TARGET_MAX:
+    elif core_count > CORE_TARGET_MAX and not approved_longform:
         warnings.append(
             f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字を超えています"
             f"（{core_count}字、重複や冗長表現を再校正してください）"
