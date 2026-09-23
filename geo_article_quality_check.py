@@ -365,7 +365,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     # User-approved, single-article exception: preserve the full AWS/NATO explainer.
     # All structural, sourcing and image quality rules stay enforced.
     approved_longform = (
-        re.search(r"(?m)^# AWSはNATOから何を承認されたのか？NATO RESTRICTEDとD32をわかりやすく解説\\s*$", body)
+        "# AWSはNATOから何を承認されたのか？NATO RESTRICTEDとD32をわかりやすく解説" in body.splitlines()
         and "https://www.aboutamazon.com/news/aws/aws-first-cloud-provider-nato-restricted-workloads" in front
     )
     if core_count < CORE_HARD_MIN:
