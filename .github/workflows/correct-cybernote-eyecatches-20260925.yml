@@ -39,12 +39,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y fonts-noto-cjk
 
-      - name: Restore approved source photos
+      - name: Restore approved preview sheet
         run: |
-          mkdir -p /tmp/eyecatchsrc
-          cat "$PAYLOAD_DIR"/part*.b64 | base64 -d > /tmp/eyefix.tar.gz
-          tar -xzf /tmp/eyefix.tar.gz -C /tmp/eyecatchsrc
-          ls -lh /tmp/eyecatchsrc
+          cat "$PAYLOAD_DIR"/part*.b64 | base64 -d > /tmp/cybernote-approved-preview.jpg.gz
+          gzip -dc /tmp/cybernote-approved-preview.jpg.gz > /tmp/cybernote-approved-preview.jpg
+          file /tmp/cybernote-approved-preview.jpg
+          ls -lh /tmp/cybernote-approved-preview.jpg
 
       - name: Restore the seven approved eyecatches
         run: |
@@ -52,22 +52,28 @@ jobs:
           from pathlib import Path
           from PIL import Image
 
-          src = Path("/tmp/eyecatchsrc")
+          sheet = Image.open("/tmp/cybernote-approved-preview.jpg").convert("RGB")
+          if sheet.size != (1200, 1660):
+              raise SystemExit(f"unexpected preview sheet size: {sheet.size}")
+
+          # Exact card bounds from the approved seven-image preview.
+          # Each crop is 564x376 (3:2), then resized to CyberNote's 1200x800 standard.
+          items = [
+              ("ai-agent-security-openai-australia-medicare", (16, 16, 580, 392)),
+              ("d-link-dir-822a-router-zero-day", (616, 16, 1180, 392)),
+              ("digital-agency-gss-vpn-vulnerability", (16, 428, 580, 804)),
+              ("eviltokens-microsoft-account-takeover", (616, 428, 1180, 804)),
+              ("google-gdpr-fine-location-data", (16, 840, 580, 1216)),
+              ("supply-chain-attack-npm-crowdsec", (616, 840, 1180, 1216)),
+              ("windows-zero-day-patch-tuesday-2026-09", (16, 1252, 580, 1628)),
+          ]
+
           out = Path("projects/cybernote-security-news/eyecatches")
           out.mkdir(parents=True, exist_ok=True)
-          names = [
-              "digital-agency-gss-vpn-vulnerability",
-              "ai-agent-security-openai-australia-medicare",
-              "windows-zero-day-patch-tuesday-2026-09",
-              "d-link-dir-822a-router-zero-day",
-              "eviltokens-microsoft-account-takeover",
-              "google-gdpr-fine-location-data",
-              "supply-chain-attack-npm-crowdsec",
-          ]
-          for stem in names:
-              source = src / f"{stem}.jpg"
+
+          for stem, box in items:
+              image = sheet.crop(box).resize((1200, 800), Image.Resampling.LANCZOS)
               target = out / f"{stem}.png"
-              image = Image.open(source).convert("RGB").resize((1200, 800), Image.Resampling.LANCZOS)
               image.save(target, "PNG", optimize=True)
               with Image.open(target) as check:
                   check.load()
