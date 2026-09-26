@@ -1,0 +1,194 @@
+name: Publish OpenAI Agent Incident
+
+# One-off publication route for the long-form, user-approved OpenAI agent incident report.
+# Trigger only after the prepared article and generated image have been committed.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/cybernote-security-news/articles/openai-ai-agent-hugging-face-data-leak-2026.md'
+      - 'projects/cybernote-security-news/eyecatches/openai-ai-agent-hugging-face-data-leak-2026.webp'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  SLUG: openai-ai-agent-hugging-face-data-leak-2026
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Convert generated image and check GEO metadata
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import geo_meta
+          import json
+          import os
+          slug = os.environ['SLUG']
+          image_dir = Path(os.environ['IMAGES_DIR'])
+          src = image_dir / (slug + '.webp')
+          out = image_dir / (slug + '.png')
+          if src.exists():
+              with Image.open(src) as img:
+                  img.convert('RGB').resize((1200, 800), Image.Resampling.LANCZOS).save(out, format='PNG', optimize=True)
+          assert out.exists(), 'Generated eyecatch is missing'
+          with Image.open(out) as img:
+              img.verify()
+          with Image.open(out) as img:
+              assert img.format == 'PNG' and img.size == (1200, 800), 'Invalid eyecatch'
+          article = Path(os.environ['ARTICLES_DIR']) / (slug + '.md')
+          front, body = geo_meta.parse_front_matter(article.read_text(encoding='utf-8'))
+          assert len(front.get('faq', [])) == 5, 'Five FAQ entries are required'
+          assert len(front.get('sources', [])) >= 5, 'Five verified sources are required'
+          assert front.get('rank_math_title') and front.get('rank_math_description')
+          assert front.get('rank_math_focus_keyword')
+          assert front.get('cve') == '', 'This non-CVE incident must have an empty CVE'
+          meta = geo_meta.build_geo_meta(article.read_text(encoding='utf-8'), cve_hint='', slug=slug)
+          assert meta.get('_cng_answer') and meta.get('_cng_faq') and meta.get('_cng_sources')
+          print('GEO Kit and generated image verified')
+          PY
+
+      - name: Prepare single article ledger entry
+        id: ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime
+          import os
+          from pathlib import Path
+          ledger = Path(os.environ['LEDGER'])
+          slug = os.environ['SLUG']
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fieldnames = reader.fieldnames
+              rows = list(reader)
+          matches = [r for r in rows if r.get('スラッグ') == slug]
+          if matches:
+              row = matches[0]
+          else:
+              row = {k: '' for k in fieldnames}
+              row.update({
+                  'No': str(max(int(r.get('No', '0')) for r in rows if r.get('No', '').isdigit()) + 1),
+                  '収集日': '2026-09-26',
+                  '公開予定日': '2026-09-26',
+                  '記事分類': 'AIエージェントセキュリティ',
+                  '指定KW': 'OpenAI AIエージェント 暴走',
+                  '話題性スコア': '100',
+                  '記事タイトル案': 'OpenAIのAIエージェント暴走事案まとめ｜Hugging Face侵入から政府サイト・画像流出まで',
+                  '記事タイトル': 'OpenAIのAIエージェント暴走事案まとめ｜Hugging Face侵入から政府サイト・画像流出まで',
+                  'スラッグ': slug,
+                  'メタディスクリプション': 'OpenAIが開発中のAIエージェントが隔離環境を抜け出し、Hugging Faceや豪政府サイトに侵入した事案を解説。画像53件の流出、侵入の仕組み、OpenAIの対応、利用者と企業が取るべき対策まで整理します。',
+                  'WPカテゴリ': 'サイバーセキュリティ',
+                  'タグ案': 'OpenAI,AIエージェント,Hugging Face,ChatGPT,情報漏えい',
+                  '記事ファイル': os.environ['ARTICLES_DIR'] + '/' + slug + '.md',
+                  '画像ファイル名': os.environ['IMAGES_DIR'] + '/' + slug + '.png',
+                  '主な出典URL': 'https://openai.com/hugging-face-incident-and-misalignment/',
+                  '内部リンクURL': 'https://www.cybernote.click/2026/09/24/ai-agent-security-openai-australia-medicare/',
+                  '目標文字数': '7500',
+                  '生成ステータス': '生成済み',
+                  'レビュー判定': '確認済み',
+                  '候補ID': '20260926-OPENAI-AGENT'
+              })
+              rows.append(row)
+          with ledger.open('w', encoding='utf-8-sig', newline='') as f:
+              writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator='\n')
+              writer.writeheader()
+              writer.writerows(rows)
+          with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as f:
+              f.write('post_no=' + row['No'] + '\n')
+          print('Target No.' + row['No'])
+          PY
+
+      - name: Publish to WordPress with generated eyecatch
+        env:
+          WP_BASE_URL: \${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: \${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: \${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: \${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: \${{ secrets.WP_EXTRA_HEADERS }}
+          TARGET_NO: \${{ steps.ledger.outputs.post_no }}
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NO" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --fallback-media-id 0 \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        env:
+          TARGET_NO: \${{ steps.ledger.outputs.post_no }}
+        run: |
+          python - <<'PY'
+          import csv
+          import os
+          from pathlib import Path
+          files = sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          assert files, 'Missing WordPress posting results'
+          with files[-1].open(encoding='utf-8-sig', newline='') as f:
+              results = [r for r in csv.DictReader(f) if r.get('no') == os.environ['TARGET_NO']]
+          assert results, 'Target is missing from posting results'
+          last = results[-1]
+          assert last.get('status') in ('posted','updated'), f"Publication failed: {last.get('status')}: {last.get('error_content')}"
+          assert last.get('post_id') and last.get('post_link'), 'WordPress post link/ID is missing'
+          p = Path(os.environ['LEDGER'])
+          with p.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fieldnames = reader.fieldnames
+              rows = list(reader)
+          row = next(r for r in rows if r.get('No') == os.environ['TARGET_NO'])
+          row.update({
+              '投稿ステータス':'公開済み',
+              'WP投稿ID':last['post_id'],
+              'WP投稿URL':last['post_link'],
+              '最終更新日時':last.get('posted_at') or last.get('updated_at') or '',
+              'エラー内容':''
+          })
+          with p.open('w', encoding='utf-8-sig', newline='') as f:
+              writer = csv.DictWriter(f,fieldnames=fieldnames,lineterminator='\n')
+              writer.writeheader()
+              writer.writerows(rows)
+          print('PUBLISHED:',last['post_link'])
+          with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a',encoding='utf-8') as f:
+              f.write('Published: ' + last['post_link'] + '\n')
+          PY
+
+      - name: Commit published ledger and final PNG
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$LEDGER" "$IMAGES_DIR/$SLUG.png"
+          if test -f "$IMAGES_DIR/$SLUG.webp"; then git rm "$IMAGES_DIR/$SLUG.webp"; fi
+          if ! git diff --cached --quiet; then
+            git commit -m "Record published OpenAI agent incident and final eyecatch"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
