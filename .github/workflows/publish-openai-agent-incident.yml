@@ -8,6 +8,7 @@ on:
     paths:
       - 'projects/cybernote-security-news/articles/openai-ai-agent-hugging-face-data-leak-2026.md'
       - 'projects/cybernote-security-news/eyecatches/openai-ai-agent-hugging-face-data-leak-2026.webp'
+      - '.github/workflows/publish-openai-agent-incident.yml'
   workflow_dispatch:
 
 permissions:
@@ -63,7 +64,7 @@ jobs:
           assert len(front.get('sources', [])) >= 5, 'Five verified sources are required'
           assert front.get('rank_math_title') and front.get('rank_math_description')
           assert front.get('rank_math_focus_keyword')
-          assert front.get('cve') == '', 'This non-CVE incident must have an empty CVE'
+          assert not front.get('cve'), 'This non-CVE incident must have an empty CVE'
           meta = geo_meta.build_geo_meta(article.read_text(encoding='utf-8'), cve_hint='', slug=slug)
           assert meta.get('_cng_answer') and meta.get('_cng_faq') and meta.get('_cng_sources')
           print('GEO Kit and generated image verified')
