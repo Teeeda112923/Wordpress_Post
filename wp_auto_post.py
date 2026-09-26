@@ -2485,9 +2485,9 @@ def main() -> int:
                     post_content = build_image_block(media_url, alt_text) + body_html
 
             # フォーカスKWは本文表記に寄せ、SEOタイトル/説明も Rank Math に設定する
-            focus_keyword = align_focus_keyword(kw, title)
-            seo_title = build_seo_title(title)
-            seo_description = excerpt
+            focus_keyword = safe_str(front_matter.get("rank_math_focus_keyword")) or align_focus_keyword(kw, title)
+            seo_title = safe_str(front_matter.get("rank_math_title")) or build_seo_title(title)
+            seo_description = safe_str(front_matter.get("rank_math_description")) or excerpt
             created = wp.create_post(
                 title=title,
                 content_html=post_content,
