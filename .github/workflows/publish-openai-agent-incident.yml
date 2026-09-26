@@ -32,6 +32,16 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Record publication Action start
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin main
+          git checkout -B main origin/main
+          printf 'state=started\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\nstarted_utc=%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > .github/openai-agent-publication-status.txt
+          git add -f .github/openai-agent-publication-status.txt
+          git commit -m 'Mark OpenAI agent publication workflow start'
+          git push origin HEAD:main
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
