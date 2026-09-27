@@ -1,0 +1,47 @@
+name: Verify IPA Trusted AI Platform 2026
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verify-ipa-trusted-ai-platform-2026.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify public WordPress post
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+        run: |
+          python - <<'PY'
+          import json, os, urllib.request
+          base=os.environ['WP_BASE_URL'].rstrip('/')
+          api=f'{base}/wp-json/wp/v2/posts/7807'
+          req=urllib.request.Request(api,headers={'User-Agent':'Mozilla/5.0'})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              data=json.load(r)
+          assert data.get('status')=='publish', data.get('status')
+          assert data.get('slug')=='ipa-trusted-ai-platform-offline-2026', data.get('slug')
+          assert int(data.get('featured_media') or 0)>0, 'featured_media missing'
+          html=(data.get('content') or {}).get('rendered','')
+          required=['overview.png','offline.png','six-insights.png','control-gap.png']
+          missing=[x for x in required if x not in html]
+          assert not missing, f'missing inline images: {missing}'
+          link=data.get('link','')
+          assert link, 'post link missing'
+          with urllib.request.urlopen(urllib.request.Request(link,headers={'User-Agent':'Mozilla/5.0'}),timeout=30) as r:
+              page=r.read().decode('utf-8','ignore')
+              code=r.status
+          assert code==200, code
+          assert 'IPAが' in page and '信頼できるAI基盤' in page
+          print('VERIFY_OK')
+          print('post_id=',data.get('id'))
+          print('post_link=',link)
+          print('featured_media=',data.get('featured_media'))
+          print('inline_images=',','.join(required))
+          PY

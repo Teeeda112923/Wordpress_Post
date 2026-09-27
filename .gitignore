@@ -1,0 +1,8 @@
+results/
+results_*.csv
+__pycache__/
+*.pyc
+.venv/
+.env
+# 遮断（Imunify360）で打ち切ったときの目印。ワークフローの再実行判定にだけ使う
+.wp_blocked

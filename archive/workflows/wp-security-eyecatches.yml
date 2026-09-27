@@ -1,0 +1,119 @@
+name: WordPress Security Eyecatches
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "開始No（例: 001）"
+        type: string
+        required: false
+        default: "001"
+      end:
+        description: "終了No（例: 054）"
+        type: string
+        required: false
+        default: "054"
+      limit:
+        description: "生成件数上限（0で無制限）"
+        type: string
+        required: true
+        default: "1"
+      quality:
+        description: "画像品質"
+        type: choice
+        required: true
+        default: "high"
+        options: [low, medium, high, auto]
+      force:
+        description: "既存画像を上書きする"
+        type: boolean
+        required: true
+        default: false
+      md_priority:
+        description: "記事本文を最優先コンテキストにする"
+        type: boolean
+        required: true
+        default: true
+      dry_run:
+        description: "APIを呼ばず対象だけ確認する"
+        type: boolean
+        required: true
+        default: true
+      commit:
+        description: "生成画像を実行ブランチへコミットする"
+        type: boolean
+        required: true
+        default: false
+
+concurrency:
+  group: wp-security-eyecatches
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate eyecatches
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          FORCE_FLAG=""
+          MD_FLAG=""
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.force }}" = "true" ]; then FORCE_FLAG="--force"; fi
+          if [ "${{ inputs.md_priority }}" = "true" ]; then MD_FLAG="--md-priority"; fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then DRY_RUN_FLAG="--dry-run"; fi
+
+          python generate_eyecatches.py \
+            --input "data/wordpress-security-production.xlsx" \
+            --sheet "画像生成プロンプト一覧" \
+            --out-dir "projects/wordpress-security/eyecatches" \
+            --results "projects/wordpress-security/results/eyecatch_generation_results.csv" \
+            --md-dir "projects/wordpress-security/articles" \
+            --start "${{ inputs.start }}" \
+            --end "${{ inputs.end }}" \
+            --limit "${{ inputs.limit }}" \
+            --quality "${{ inputs.quality }}" \
+            $FORCE_FLAG $MD_FLAG $DRY_RUN_FLAG
+
+      - name: Upload generated files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wordpress-security-eyecatches
+          path: |
+            projects/wordpress-security/eyecatches/*.png
+            projects/wordpress-security/results/eyecatch_generation_results.csv
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit generated images
+        if: ${{ inputs.commit == true && inputs.dry_run == false }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add projects/wordpress-security/eyecatches projects/wordpress-security/results/eyecatch_generation_results.csv
+          if git diff --cached --quiet; then
+            echo "コミット対象の画像はありません"
+          else
+            git commit -m "Generate WordPress security eyecatches [skip ci]"
+            git push
+          fi

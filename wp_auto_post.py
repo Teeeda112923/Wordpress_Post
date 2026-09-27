@@ -1,0 +1,2617 @@
+#!/usr/bin/env python3
+"""
+GitHub Actions から WordPress REST API へ記事を自動投稿するスクリプト。
+
+認証情報は環境変数で受け取ります（コードに直書きしない）:
+- WP_BASE_URL      例: https://example.com
+- WP_USERNAME      WordPress ユーザー名
+- WP_APP_PASSWORD  アプリケーションパスワード（再発行したもの）
+
+使い方:
+    python wp_auto_post.py \
+        --input projects/cybernote-security-news/data/news_ledger.csv \
+        --articles-dir projects/cybernote-security-news/articles \
+        --images-dir projects/cybernote-security-news/eyecatches \
+        --post-status publish \
+        --write-mode upsert \
+        --dry-run \
+        --limit 1
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import datetime as dt
+import mimetypes
+import os
+import re
+import time
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+import markdown
+import pandas as pd
+import requests
+from requests.adapters import HTTPAdapter
+from slugify import slugify
+from urllib3.util.retry import Retry
+
+# CyberNote GEO Kit（独自プラグイン）用メタの組み立て。
+# 投稿の設計（台帳・下書き→公開・cron）は変えず、メタだけを追加で送る。
+import geo_meta as geo_kit
+
+# ローカル実行時は同じフォルダの .env を自動で読み込む。
+# （GitHub Actions では Secrets が環境変数として渡るため、.env が無くても動く）
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except Exception:
+    pass
+
+
+# --------------------------------------------------------------------------- #
+# 列名候補（用途 -> 候補リスト）。完全一致 -> 部分一致の順で柔軟に探索する。
+# --------------------------------------------------------------------------- #
+COLUMN_CANDIDATES: dict[str, list[str]] = {
+    "no": ["No", "番号", "記事No", "ID"],
+    "kw": ["指定KW", "管理KW", "KW", "キーワード", "親KW"],
+    "title": ["記事タイトル", "記事タイトル案", "タイトル", "H1", "title"],
+    "slug": ["スラッグ", "slug", "Slug"],
+    "meta": ["メタディスクリプション案", "メタディスクリプション", "description", "概要"],
+    "category": ["WPカテゴリ", "カテゴリ", "記事カテゴリ", "category"],
+    "tag": ["タグ案", "タグ", "WPタグ", "tags"],
+    "image_name": ["画像ファイル名", "アイキャッチファイル名", "画像名"],
+    "alt": ["画像alt", "アイキャッチalt", "代替テキスト", "alt"],
+    "char_target": ["文字数目安", "目標文字数", "文字数", "想定文字数"],
+}
+
+IMAGE_EXTENSIONS = [".webp", ".jpg", ".jpeg", ".png"]
+
+
+# --------------------------------------------------------------------------- #
+# ユーティリティ
+# --------------------------------------------------------------------------- #
+def env_required(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise RuntimeError(f"環境変数 {name} が未設定です。GitHub Secrets を確認してください。")
+    return value
+
+
+def normalize_url(url: str) -> str:
+    return url.rstrip("/")
+
+
+def basic_auth_header(username: str, app_password: str) -> dict[str, str]:
+    # アプリケーションパスワードのスペースは WordPress が無視するため除去しておく
+    app_password = app_password.replace(" ", "")
+    token = base64.b64encode(f"{username}:{app_password}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}
+
+
+def safe_str(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and pd.isna(value):
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def find_col(columns: list[str], candidates: list[str]) -> str | None:
+    """完全一致（大文字小文字無視）を最優先し、無ければ部分一致で探す。"""
+    norm = {str(c).strip().lower(): c for c in columns}
+    # 1) 完全一致
+    for cand in candidates:
+        key = cand.strip().lower()
+        if key in norm:
+            return norm[key]
+    # 2) 部分一致（列名のブレ対策）
+    for cand in candidates:
+        key = cand.strip().lower()
+        for col_key, original in norm.items():
+            if key in col_key or col_key in key:
+                return original
+    return None
+
+
+def read_table(path: Path, sheet: str | None) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"入力ファイルが見つかりません: {path}")
+
+    suffix = path.suffix.lower()
+    if suffix in (".xlsx", ".xlsm", ".xls"):
+        df = pd.read_excel(path, sheet_name=sheet or 0, dtype=object)
+    elif suffix == ".csv":
+        df = pd.read_csv(path, dtype=object)
+    else:
+        raise ValueError("入力は .xlsx / .xlsm / .xls / .csv のいずれかにしてください。")
+
+    df = df.dropna(how="all")
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def first_existing(paths: list[Path]) -> Path | None:
+    for p in paths:
+        if p.exists() and p.is_file():
+            return p
+    return None
+
+
+def split_terms(value: str) -> list[str]:
+    if not value:
+        return []
+    parts = re.split(r"[,、\n/|｜]+", value)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def make_slug(text: str, fallback: str) -> str:
+    value = slugify(text or fallback, lowercase=True)
+    value = value[:90].strip("-")
+    return value or fallback
+
+
+def parse_no_spec(spec: str) -> set[int] | None:
+    """"2-10,13-15,20" のような指定を No の集合に展開する。空なら None（全件）。"""
+    spec = (spec or "").strip()
+    if not spec:
+        return None
+    result: set[int] = set()
+    for part in re.split(r"[,、\s]+", spec):
+        part = part.strip()
+        if not part:
+            continue
+        m = re.match(r"^(\d+)\s*[-~〜]\s*(\d+)$", part)
+        if m:
+            a, b = int(m.group(1)), int(m.group(2))
+            result.update(range(min(a, b), max(a, b) + 1))
+        elif part.isdigit():
+            result.add(int(part))
+    return result or None
+
+
+def detect_duplicate_slugs(df: "pd.DataFrame", col: dict[str, str | None]) -> dict[str, list[str]]:
+    """管理表の各行から投稿スラッグを算出し、重複しているスラッグを返す。
+
+    戻り値は {スラッグ: [No, No, ...]}（2件以上重複したものだけ）。投稿ループと
+    同じ規則（スラッグ列があればそれ、無ければタイトル）でスラッグを計算する。
+    """
+    by_slug: dict[str, list[str]] = {}
+    for idx, row in df.iterrows():
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(int(idx) + 1)
+        if not no_value:
+            no_value = str(int(idx) + 1)
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        if not title and col["kw"]:
+            title = safe_str(row.get(col["kw"]))
+        if not title:
+            continue
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        by_slug.setdefault(slug, []).append(no_value)
+    return {slug: nos for slug, nos in by_slug.items() if len(nos) > 1}
+
+
+def no_to_int(no_value: Any) -> int | None:
+    s = safe_str(no_value)
+    if not s:
+        return None
+    try:
+        return int(float(s))
+    except ValueError:
+        return None
+
+
+def row_no_to_names(no_value: str) -> list[str]:
+    raw = safe_str(no_value)
+    if not raw:
+        return []
+    try:
+        number = int(float(raw))
+        return [f"{number:03d}", str(number)]
+    except ValueError:
+        return [raw]
+
+
+_VOID_TAGS = {"br", "hr", "img", "input", "meta", "link", "area", "base",
+              "col", "embed", "source", "track", "wbr"}
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z0-9]+)([^>]*?)(/?)>")
+
+
+def _split_top_level(html: str) -> list[tuple[str, str]]:
+    """HTML をトップレベル要素ごとに (タグ名, 要素HTML) のリストに分割する。"""
+    elements: list[tuple[str, str]] = []
+    depth = 0
+    start: int | None = None
+    cur_tag = ""
+    for m in _TAG_RE.finditer(html):
+        closing = m.group(1) == "/"
+        tag = m.group(2).lower()
+        selfclose = bool(m.group(4)) or tag in _VOID_TAGS
+        if depth == 0 and not closing:
+            start = m.start()
+            cur_tag = tag
+            if selfclose:
+                elements.append((tag, html[start:m.end()]))
+                start = None
+            else:
+                depth = 1
+        elif not closing and not selfclose:
+            depth += 1
+        elif closing:
+            depth -= 1
+            if depth == 0 and start is not None:
+                elements.append((cur_tag, html[start:m.end()]))
+                start = None
+    return elements
+
+
+def html_to_gutenberg_blocks(html: str) -> str:
+    """Markdown 由来の HTML を Gutenberg ブロックマークアップへ変換する。
+
+    これにより WordPress 投稿時に「無効なブロック（ブロックを解除）」の警告を防ぐ。
+    対応: 段落 / 見出し / リスト / 表 / 引用 / 区切り線。未知要素は HTML ブロックで包む。
+    """
+    blocks: list[str] = []
+    for tag, el in _split_top_level(html):
+        el = el.strip()
+        if not el:
+            continue
+        if tag == "p":
+            blocks.append(f"<!-- wp:paragraph -->\n{el}\n<!-- /wp:paragraph -->")
+        elif tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            level = int(tag[1])
+            m = re.match(r"<h[1-6][^>]*>(.*)</h[1-6]>\s*$", el, re.S)
+            inner = m.group(1) if m else el
+            attr = "" if level == 2 else f' {{"level":{level}}}'
+            blocks.append(
+                f"<!-- wp:heading{attr} -->\n"
+                f'<h{level} class="wp-block-heading">{inner}</h{level}>\n'
+                f"<!-- /wp:heading -->"
+            )
+        elif tag in ("ul", "ol"):
+            ordered = tag == "ol"
+            items = re.findall(r"<li[^>]*>(.*?)</li>", el, re.S)
+            li_html = "".join(
+                f"<!-- wp:list-item -->\n<li>{it.strip()}</li>\n<!-- /wp:list-item -->\n"
+                for it in items
+            )
+            list_attr = ' {"ordered":true}' if ordered else ""
+            list_tag = "ol" if ordered else "ul"
+            blocks.append(
+                f"<!-- wp:list{list_attr} -->\n"
+                f'<{list_tag} class="wp-block-list">\n{li_html}</{list_tag}>\n'
+                f"<!-- /wp:list -->"
+            )
+        elif tag == "table":
+            blocks.append(
+                "<!-- wp:table -->\n"
+                f'<figure class="wp-block-table">{el}</figure>\n'
+                "<!-- /wp:table -->"
+            )
+        elif tag == "blockquote":
+            blocks.append(f"<!-- wp:quote -->\n{el}\n<!-- /wp:quote -->")
+        elif tag == "hr":
+            blocks.append(
+                '<!-- wp:separator -->\n'
+                '<hr class="wp-block-separator has-alpha-channel-opacity"/>\n'
+                "<!-- /wp:separator -->"
+            )
+        elif tag == "pre":
+            blocks.append(f"<!-- wp:code -->\n{el}\n<!-- /wp:code -->")
+        else:
+            # div など想定外の生 HTML は HTML ブロックで包む（解除警告を回避）
+            blocks.append(f"<!-- wp:html -->\n{el}\n<!-- /wp:html -->")
+    return "\n\n".join(blocks)
+
+
+# --------------------------------------------------------------------------- #
+# 本文の補正（FAQ改行 / 内部リンク / 参考リンク / KW表記）
+# --------------------------------------------------------------------------- #
+_FAQ_QA_PATTERN = re.compile(r"(\*\*Q[^\n]*\*\*)\n(A[.．])")
+
+_INTERNAL_LINK_COMMENT = re.compile(
+    r"<!--\s*内部リンク候補[：:]\s*No\.?\s*0*(\d+)「[^」]*」\s*[／/]\s*"
+    r"アンカーテキスト「([^」]*)」\s*-->"
+)
+
+_BLOGCARD_PLACEHOLDER = re.compile(
+    r"<!-- wp:paragraph -->\s*<p>%%BLOGCARD:([^%<]+)%%</p>\s*<!-- /wp:paragraph -->"
+)
+
+# 参考情報のリンク先（正規URL）。行テキストに「キー」を含めばそのURLでリンク化する。
+# より具体的なキーを上に置く（先に一致したものを採用）。
+REFERENCE_URLS: list[tuple[str, str]] = [
+    ("CyberNote Security Checker", "https://wordpress.org/plugins/cybernote-security-checker/"),
+    ("Wordfence Security", "https://wordpress.org/plugins/wordfence/"),
+    ("Wordfence 公式「Pricing」", "https://www.wordfence.com/products/"),
+    ("Wordfence", "https://wordpress.org/plugins/wordfence/"),
+    ("SiteGuard WP Plugin", "https://wordpress.org/plugins/siteguard/"),
+    ("Sucuri Security", "https://wordpress.org/plugins/sucuri-scanner/"),
+    ("All-In-One Security", "https://wordpress.org/plugins/all-in-one-wp-security-and-firewall/"),
+    ("BackWPup", "https://wordpress.org/plugins/backwpup/"),
+    ("UpdraftPlus", "https://wordpress.org/plugins/updraftplus/"),
+    ("WP 2FA", "https://wordpress.org/plugins/wp-2fa/"),
+    ("miniOrange 2FA", "https://wordpress.org/plugins/miniorange-2-factor-authentication/"),
+    ("Two Factor", "https://wordpress.org/plugins/two-factor/"),
+    ("Contact Form 7", "https://wordpress.org/plugins/contact-form-7/"),
+    ("Hardening WordPress", "https://developer.wordpress.org/advanced-administration/security/hardening/"),
+    ("Brute Force Attacks", "https://developer.wordpress.org/advanced-administration/security/brute-force/"),
+    ("Roles and Capabilities", "https://wordpress.org/documentation/article/roles-and-capabilities/"),
+    ("REST API Handbook", "https://developer.wordpress.org/rest-api/"),
+    ("Theme Developer Handbook", "https://developer.wordpress.org/themes/advanced-topics/security/"),
+    ("Upgrading WordPress", "https://developer.wordpress.org/advanced-administration/upgrade/upgrading-core/"),
+    ("自動バックグラウンド更新", "https://ja.wordpress.org/support/article/configuring-automatic-background-updates/"),
+    ("サイトヘルス", "https://ja.wordpress.org/support/article/site-health-screen/"),
+    ("FAQ My site was hacked", "https://developer.wordpress.org/advanced-administration/security/faq-my-site-was-hacked/"),
+    ("WordPress.org セキュリティリリース", "https://wordpress.org/news/category/security/"),
+    ("一般設定", "https://ja.wordpress.org/support/article/settings-general-screen/"),
+    ("PHP", "https://www.php.net/supported-versions.php"),
+    ("Patchstack", "https://patchstack.com/whitepaper/state-of-wordpress-security-in-2026/"),
+    ("WPScan Vulnerability Database", "https://wpscan.com/wordpresses/"),
+    ("JVN iPedia", "https://jvndb.jvn.jp/"),
+    ("情報セキュリティ白書", "https://www.ipa.go.jp/publish/wp-security/index.html"),
+    ("安全なウェブサイトの作り方", "https://www.ipa.go.jp/security/vuln/websecurity/index.html"),
+    ("Amazon Lightsail", "https://docs.aws.amazon.com/lightsail/"),
+    ("混合コンテンツ", "https://web.dev/articles/what-is-mixed-content"),
+    ("MDN Web Docs", "https://developer.mozilla.org/ja/docs/Web/HTTP/Headers"),
+    ("エックスサーバー", "https://www.xserver.ne.jp/manual/"),
+    ("ロリポップ", "https://lolipop.jp/manual/"),
+]
+
+
+def fix_faq_linebreaks(md_text: str) -> str:
+    """よくある質問の「**Q…**」と「A…」を同じ段落内で改行させる。
+
+    Markdown では単一改行はスペース扱いになり Q と A が1行に連結される。
+    Q 行の末尾に半角スペース2つを補い、hard break（<br>）にする。
+    """
+    return _FAQ_QA_PATTERN.sub(r"\1  \n\2", md_text)
+
+
+def seed_focus_keyword(text: str, raw_kw: str, aligned_kw: str) -> str:
+    """本文・メタ内の指定KW表記をフォーカスKW（整形後）へ揃える。
+
+    例: 指定KW「wordpress セキュリティ」→ 本文/メタの
+        「wordpress セキュリティ」「WordPress セキュリティ」「WordPressのセキュリティ」
+        などを、フォーカスKW「WordPressセキュリティ」に統一する。
+    これで Rank Math のメタ説明・密度・見出し・先頭判定の一致率が上がる。
+    """
+    if not aligned_kw:
+        return text
+    # 「〜の」で繋ぐ自然な表記も拾う（WordPressのセキュリティ 等）
+    text = text.replace("WordPressのセキュリティ", "WordPressセキュリティ")
+    raw_kw = safe_str(raw_kw).strip()
+    if raw_kw:
+        words = [w for w in re.split(r"[ 　]+", raw_kw) if w]
+        if words:
+            pattern = r"[ 　]*".join(re.escape(w) for w in words)
+            text = re.sub(pattern, aligned_kw, text, flags=re.IGNORECASE)
+    return text
+
+
+def convert_internal_links(md_text: str, no_to_url: dict[int, str]) -> str:
+    """本文中の「内部リンク候補」コメントを、ブログカード用プレースホルダへ置換する。
+
+    実際のブロック（cocoon-blocks/embed-blogcard）は Gutenberg 変換後に
+    inject_blogcards() で差し込む。ここでは対象スラッグを埋めた目印だけ置く。
+    対象Noが管理表に無い場合はコメントごと削除する。
+    """
+    def repl(m: "re.Match[str]") -> str:
+        target_no = int(m.group(1))
+        url_path = no_to_url.get(target_no)
+        if not url_path:
+            return ""
+        return f"%%BLOGCARD:{url_path}%%"
+
+    return _INTERNAL_LINK_COMMENT.sub(repl, md_text)
+
+
+def link_references(md_text: str) -> str:
+    """「## 参考情報」内の各項目を、既知の正規URLでリンク化する。"""
+    lines = md_text.split("\n")
+    in_ref = False
+    for i, line in enumerate(lines):
+        if re.match(r"^##\s", line):
+            in_ref = "参考情報" in line
+            continue
+        if not in_ref:
+            continue
+        stripped = line.strip()
+        if not stripped.startswith("-"):
+            continue
+        text = stripped[1:].strip()
+        if not text or "](" in text:  # 既にリンク済みはスキップ
+            continue
+        for key, url in REFERENCE_URLS:
+            if key in text:
+                indent = line[: len(line) - len(line.lstrip())]
+                lines[i] = f"{indent}- [{text}]({url})"
+                break
+    return "\n".join(lines)
+
+
+def build_blogcard_block(url: str) -> str:
+    """内部リンクを Cocoon のブログカード（メモボックス囲み）ブロックとして生成する。
+
+    見出し文をテキストリンクにして実際の <a href> を含める。これにより
+    Cocoon がブログカードを動的描画する前でも、Rank Math が内部リンクを
+    検出できる（ブロックコメントだけだと内部リンク無しと判定されるため）。
+    """
+    return (
+        '<!-- wp:group {"className":"is-style-memo-box","layout":{"type":"constrained"}} -->\n'
+        '<div class="wp-block-group is-style-memo-box">'
+        '<!-- wp:paragraph {"style":{"typography":{"textAlign":"left"}}} -->\n'
+        f'<p class="has-text-align-left">▼ <a href="{url}">詳しくはこちらを参考ください</a></p>\n'
+        '<!-- /wp:paragraph -->\n\n'
+        f'<!-- wp:cocoon-blocks/embed-blogcard {{"url":"{url}"}} /--></div>\n'
+        '<!-- /wp:group -->'
+    )
+
+
+def inject_blogcards(blocks_html: str, base_url: str) -> str:
+    """Gutenberg 変換後のプレースホルダ段落をブログカードブロックへ置き換える。"""
+    def repl(m: "re.Match[str]") -> str:
+        path = m.group(1)
+        if path.startswith("http"):  # 実パーマリンク解決済みの絶対URL
+            url = path
+        else:
+            url = base_url.rstrip("/") + "/" + path.lstrip("/")
+        return build_blogcard_block(url)
+
+    return _BLOGCARD_PLACEHOLDER.sub(repl, blocks_html)
+
+
+def enhance_article_markdown(
+    md_text: str, no_to_url: dict[int, str], raw_kw: str = "", aligned_kw: str = ""
+) -> str:
+    """投稿前に本文Markdownへ加える補正をまとめて適用する。"""
+    md_text = seed_focus_keyword(md_text, raw_kw, aligned_kw)
+    md_text = fix_faq_linebreaks(md_text)
+    md_text = convert_internal_links(md_text, no_to_url)
+    md_text = link_references(md_text)
+    return md_text
+
+
+def markdown_to_html(md_text: str, *, strip_h1: bool, title: str = "") -> str:
+    """Markdown -> HTML。strip_h1=True なら本文先頭の H1 を無条件で除去する。
+
+    WordPress テーマ側が投稿タイトルを表示するため、本文先頭の H1 はタイトルと
+    一致していなくても二重表示になる。よって先頭 H1（Markdown の `# ...`）は
+    内容に関わらず削除する。本文中の `##` 以降（H2/H3...）は残す。
+    title 引数は後方互換のため残しているが判定には使用しない。
+    """
+    text = md_text.lstrip("﻿").lstrip()
+    if strip_h1:
+        text = strip_leading_markdown_h1(text)
+
+    html = markdown.markdown(
+        text,
+        extensions=["extra", "tables", "sane_lists", "toc"],
+        output_format="html5",
+    )
+
+    if strip_h1:
+        html = strip_leading_html_h1(html)
+    return html
+
+
+def build_image_block(image_url: str, alt_text: str) -> str:
+    """本文先頭に差し込むアイキャッチ画像の HTML（Gutenberg 画像ブロック）を返す。"""
+    import html as _html
+
+    safe_url = _html.escape(image_url, quote=True)
+    safe_alt = _html.escape(alt_text or "", quote=True)
+    return (
+        "<!-- wp:image {\"sizeSlug\":\"large\"} -->\n"
+        f'<figure class="wp-block-image size-large">'
+        f'<img src="{safe_url}" alt="{safe_alt}"/></figure>\n'
+        "<!-- /wp:image -->\n\n"
+    )
+
+
+def strip_leading_markdown_h1(text: str) -> str:
+    """本文の最初の見出しが H1（"# ..."）ならその行を削除する。
+
+    YAML フロントマター（先頭の --- ... ---）や空行・コメントを読み飛ばし、
+    最初に現れる「実体のある行」が H1 のときだけ削除する。setext 形式
+    （見出しの次行が === ）の H1 にも対応する。"##" 以降は対象外。
+    """
+    lines = text.split("\n")
+    n = len(lines)
+
+    # 先頭の YAML フロントマター（--- ... ---）は丸ごと除去する
+    if n and lines[0].strip() == "---":
+        j = 1
+        while j < n and lines[j].strip() != "---":
+            j += 1
+        if j < n:  # 閉じ --- が見つかった場合のみ除去
+            del lines[: j + 1]
+            n = len(lines)
+
+    i = 0
+    # 空行・HTMLコメント行を読み飛ばし、最初の実体行を探す
+    while i < n and (lines[i].strip() == "" or lines[i].lstrip().startswith("<!--")):
+        i += 1
+
+    if i >= n:
+        return text
+
+    first = lines[i]
+    # ATX 形式: "# 見出し"（"##" は除外）
+    if re.match(r"^#\s+\S", first) and not first.lstrip().startswith("##"):
+        del lines[i]
+        return "\n".join(lines).lstrip("\n")
+
+    # setext 形式: 見出しテキストの次行が "===..."（H1）
+    if i + 1 < n and re.match(r"^=+\s*$", lines[i + 1]) and first.strip():
+        del lines[i : i + 2]
+        return "\n".join(lines).lstrip("\n")
+
+    return text
+
+
+def strip_leading_html_h1(html: str) -> str:
+    """HTML 本文の最初の <h1>...</h1> を1つだけ除去する（最初の <h2> より前のもの）。
+
+    HTML を直接本文に持つケースや、フロントマター/hr 等で先頭判定を逃した
+    Markdown 変換結果に対応する。タイトル二重表示の原因となる本文冒頭の H1 は
+    必ず最初の H2（節見出し）より前に現れるため、その範囲にある最初の H1 だけを
+    削除する。本文後半に意図的に置かれた H1 は残す。
+    """
+    h1 = re.search(r"<h1\b[^>]*>.*?</h1>\s*", html, flags=re.IGNORECASE | re.DOTALL)
+    if not h1:
+        return html
+    h2 = re.search(r"<h2\b", html, flags=re.IGNORECASE)
+    if h2 and h1.start() > h2.start():
+        return html  # 最初の H1 が最初の H2 より後ろなら本文見出しとみなし残す
+    return (html[: h1.start()] + html[h1.end():]).lstrip()
+
+
+def count_text_chars(html: str) -> int:
+    """HTML 本文から本文テキストの文字数を数える（タグ除去・空白除外）。"""
+    text = re.sub(r"<[^>]+>", "", html)          # タグ除去
+    text = re.sub(r"&[a-zA-Z#0-9]+;", "", text)  # HTMLエンティティ除去
+    text = re.sub(r"\s+", "", text)              # 空白・改行を除外
+    return len(text)
+
+
+def parse_char_target(target: str) -> tuple[int | None, int | None]:
+    """「4,500〜6,500字」「3000字以上」等から (min, max) を取り出す。無ければ (None, None)。"""
+    nums = [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", target or "")]
+    if not nums:
+        return None, None
+    if len(nums) == 1:
+        return nums[0], None
+    return min(nums), max(nums)
+
+
+def judge_char_count(actual: int, target: str) -> str:
+    """文字数実績を目安レンジと比較して判定文字列を返す。目安が無ければ空。"""
+    lo, hi = parse_char_target(target)
+    if lo is None and hi is None:
+        return ""
+    if lo is not None and actual < lo:
+        return f"不足(目安{target})"
+    if hi is not None and actual > hi:
+        return f"超過(目安{target})"
+    return "OK"
+
+
+def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | None:
+    candidates: list[Path] = []
+    if slug:
+        candidates.append(articles_dir / f"{slug}.md")
+    for name in row_no_to_names(no_value):
+        candidates.append(articles_dir / f"{name}.md")
+    return first_existing(candidates)
+
+
+def is_truthy(value: Any) -> bool:
+    """フロントマターの真偽値を解釈する。
+
+    parse_front_matter() は値を文字列のまま返すため、true / yes / 1 を真とみなす。
+    表記ゆれで宣言が効かないと、まとめ記事が重複判定で止まって原因が分かりにくい。
+    """
+    if isinstance(value, bool):
+        return value
+    return safe_str(value).strip().lower() in {"true", "yes", "1", "on"}
+
+
+def find_image_file(images_dir: Path, slug: str, no_value: str, image_name: str) -> Path | None:
+    """アイキャッチ画像を探索する。今後の標準は PNG。
+
+    優先順位:
+      1. 管理表「画像ファイル名」列に値があればそれ
+      2. eyecatches/{No3桁}.png
+      3. eyecatches/{slug}.png
+      4. 互換: No3桁 / No / slug の .webp / .jpg / .jpeg
+    """
+    compat_exts = [".webp", ".jpg", ".jpeg"]
+    no_names = row_no_to_names(no_value)  # 例: ["001", "1"]
+    candidates: list[Path] = []
+
+    # 1) 管理表に明示された画像ファイル名を最優先
+    if image_name:
+        candidates.append(images_dir / image_name)
+        stem = Path(image_name).stem
+        candidates.append(images_dir / f"{stem}.png")
+        candidates += [images_dir / f"{stem}{ext}" for ext in compat_exts]
+    # 2) {No3桁}.png（→ {No}.png）
+    candidates += [images_dir / f"{name}.png" for name in no_names]
+    # 3) {slug}.png
+    if slug:
+        candidates.append(images_dir / f"{slug}.png")
+    # 4) 互換拡張子（No → slug の順）
+    for name in no_names:
+        candidates += [images_dir / f"{name}{ext}" for ext in compat_exts]
+    if slug:
+        candidates += [images_dir / f"{slug}{ext}" for ext in compat_exts]
+    return first_existing(candidates)
+
+
+def check_eyecatch(image_path: Path | None, no_value: str, images_dir: Path) -> dict[str, Any]:
+    """アイキャッチ画像を検査し、ログ文字列と Excel 反映用の値を返す。
+
+    判定:
+      - 見つからない      -> NG   / 画像未作成   / アイキャッチ画像が見つかりません
+      - PNG 以外          -> WARN / 要画像確認   / アイキャッチ画像がPNG形式ではありません
+      - 3:2 比率でない    -> WARN / 要画像確認   / アイキャッチ画像の比率が3:2ではありません
+      - 読み込めない      -> NG   / 要画像確認   / アイキャッチ画像のサイズが取得できません
+      - 上記をすべて満たす -> OK   / 画像確認済み / （エラーなし）
+    CyberNote短編ニュースではPNG署名・PNG形式・1200x800px・完全デコードを
+    すべて必須とする。一般記事は後方互換のため、従来どおり形式と比率の違いを
+    WARNにとどめる。ファイル名が No と対応しているかも併せて確認する。
+    """
+    names = row_no_to_names(no_value)
+    no3 = names[0] if names else safe_str(no_value)
+    expected = images_dir / f"{no3}.png"
+    strict_cybernote = "cybernote-security-news" in images_dir.parts
+
+    def make(level: str, status_label: str, error_content: str, log: str) -> dict[str, Any]:
+        return {
+            "level": level,
+            "image_status": status_label,
+            "error_content": error_content,
+            "log": log,
+        }
+
+    if image_path is None or not image_path.exists():
+        return make("NG", "画像未作成", "アイキャッチ画像が見つかりません",
+                    f"[NG] {no3} {expected} not found")
+
+    if strict_cybernote:
+        try:
+            signature = image_path.read_bytes()[:8]
+        except Exception as exc:
+            return make("NG", "要画像確認", "アイキャッチ画像を読み込めません",
+                        f"[NG] {no3} {image_path} cannot read bytes ({exc})")
+        if signature != b"\x89PNG\r\n\x1a\n":
+            return make("NG", "要画像確認", "アイキャッチ画像のPNG署名が不正です",
+                        f"[NG] {no3} {image_path} invalid PNG signature")
+
+    try:
+        from PIL import Image  # 遅延 import
+        with Image.open(image_path) as im:
+            fmt = im.format
+            width, height = im.size
+    except Exception as exc:
+        return make("NG", "要画像確認", "アイキャッチ画像のサイズが取得できません",
+                    f"[NG] {no3} {image_path} cannot read image ({exc})")
+
+    # Image.open() はヘッダ（PNGならIHDR）しか読まないため、画素データが途中で
+    # 切れていても形式とサイズは取得できてしまう。load() で実体まで読み切って検証する。
+    # 途中で切れたPNGをWordPressへ送ると、サムネイル生成でPHP致命的エラーになり
+    # 「500 internal_server_error: このサイトで重大なエラーが発生しました」が返る
+    # （実際に発生した。ヘッダだけ正しい786,444バイトの破損PNGが原因）。
+    try:
+        with Image.open(image_path) as im:
+            im.load()
+    except Exception as exc:
+        return make("NG", "要画像確認", "アイキャッチ画像のデータが壊れています",
+                    f"[NG] {no3} {image_path} broken image data ({exc})")
+
+    if (fmt or "").upper() != "PNG":
+        level = "NG" if strict_cybernote else "WARN"
+        return make(level, "要画像確認", "アイキャッチ画像がPNG形式ではありません",
+                    f"[{level}] {no3} {image_path} is not PNG ({fmt}, {width}x{height})")
+
+    if strict_cybernote and (width, height) != (1200, 800):
+        return make("NG", "要画像確認", "アイキャッチ画像が1200x800pxではありません",
+                    f"[NG] {no3} {image_path} size is not 1200x800 ({width}x{height})")
+
+    ratio = width / height if height else 0
+    if abs(ratio - 1.5) > 0.05:  # 3:2 = 1.5
+        return make("WARN", "要画像確認", "アイキャッチ画像の比率が3:2ではありません",
+                    f"[WARN] {no3} {image_path} ratio is not 3:2 ({width}x{height})")
+
+    size_note = "" if (width, height) == (1200, 800) else " (推奨1200x800)"
+    name_note = "" if image_path.stem in set(names) else " ※ファイル名がNoと不一致"
+    return make("OK", "画像確認済み", "",
+                f"[OK] {no3} {image_path} exists, PNG, {width}x{height}, ratio 3:2{size_note}{name_note}")
+
+
+def detect_block(response: requests.Response) -> str:
+    """応答が「サーバー側の遮断」かどうかを判定し、理由を返す（通常時は空文字）。
+
+    Imunify360 の応答は一定しない。HTTP 200 で
+    {"message": "Access denied by Imunify360 ..."} を返すこともあれば、
+    ステータスは 200 のままHTMLのチャレンジページを返すこともある。
+    後者は「JSON以外の応答」としか分からず遮断だと判別できなかった。
+    REST API は必ずJSONを返すため、HTMLが返った時点で遮断とみなす。
+    """
+    try:
+        text = (response.text or "")[:4000]
+    except Exception:
+        return ""
+    lowered = text.lower()
+
+    if "imunify" in lowered or "bot-protection" in lowered or "bot protection" in lowered:
+        return (
+            "Imunify360が自動化アクセスを遮断しました。"
+            "WordPress側でGitHub ActionsからのREST APIアクセス許可を確認してください。"
+        )
+
+    ctype = ""
+    try:
+        ctype = safe_str(response.headers.get("Content-Type")).lower()
+    except Exception:
+        pass
+    stripped = lowered.lstrip()
+    if "text/html" in ctype or stripped.startswith("<!doctype html") or stripped.startswith("<html"):
+        return (
+            f"WordPress REST APIがHTMLを返しました（HTTP {response.status_code}）。"
+            "サーバー側のボット対策・WAFに遮断された可能性があります。"
+            "WP_USER_AGENT の設定、または /wp-json/ の除外設定を確認してください。"
+        )
+
+    if response.status_code in (403, 406, 429):
+        return f"サーバー側でリクエストが遮断されました（HTTP {response.status_code}）"
+    return ""
+
+
+def response_hint(response: requests.Response) -> str:
+    """応答の出どころを1行にまとめる（遮断の切り分け用）。
+
+    CloudflareのようなCDN/WAFが手前に立つと、そこでのブロックも、
+    CDNからオリジンへ届かない場合も、オリジン自身の不調も、すべて
+    「HTMLが返る」同じ形になり、ログからは区別できなかった。
+      - cf-ray がある      -> Cloudflareが返した応答（オリジンまで届いていない）
+      - cf-mitigated がある -> Cloudflareのボット対策が止めた応答
+      - server             -> 応答したソフトウェア（LiteSpeed等ならオリジン）
+      - 本文の先頭         -> ブロックページかエラーページかの判別に使う
+    GitHub Actions の ::warning は1行しか出せないため、空白は潰して返す。
+    """
+    parts: list[str] = []
+    try:
+        headers = response.headers
+    except Exception:
+        headers = {}
+    for key in ("server", "cf-ray", "cf-mitigated", "cf-cache-status", "content-type"):
+        try:
+            value = safe_str(headers.get(key)).strip()
+        except Exception:
+            value = ""
+        if value:
+            parts.append(f"{key}={value}")
+    try:
+        body = re.sub(r"\s+", " ", response.text or "").strip()[:200]
+    except Exception:
+        body = ""
+    if body:
+        parts.append(f"body={body}")
+    return " / ".join(parts) or "(応答の詳細を取得できません)"
+
+
+def extract_api_error(response: requests.Response) -> str:
+    """WordPress REST API のエラーJSONから code/message を読みやすく抽出する。"""
+    if response.status_code == 415:
+        return (
+            "415 Unsupported Media Type が返っています。WordPressではなく、"
+            "openresty/nginx/WAF側でREST APIリクエストが拒否されている可能性があります。"
+            "WP_BASE_URL、REST API制限、セキュリティプラグイン、Basic認証の許可設定を確認してください。"
+        )
+    try:
+        data = response.json()
+        code = data.get("code", "")
+        message = data.get("message", "")
+        if message:
+            return f"{response.status_code} {code}: {message}".strip()
+    except ValueError:
+        pass
+    return f"{response.status_code}: {response.text[:500]}"
+
+
+# --------------------------------------------------------------------------- #
+# Excel への結果書き戻し（--update-excel 指定時のみ）
+# --------------------------------------------------------------------------- #
+# 結果キー -> (Excel 列名, 書き込みポリシー)。無ければ末尾に新規追加。
+#   overwrite     : 毎回（空でも）上書き。最新状態を反映する列
+#   keep_if_empty : 値が空のときは既存セルを保持。日時やIDの蓄積に使う列
+EXCEL_RESULT_COLUMNS: list[tuple[str, str, str]] = [
+    ("status", "投稿ステータス", "overwrite"),
+    ("post_id", "WP投稿ID", "keep_if_empty"),
+    ("post_link", "WP投稿URL", "keep_if_empty"),
+    ("posted_at", "最終投稿日時", "keep_if_empty"),
+    ("updated_at", "最終更新日時", "keep_if_empty"),
+    ("run_mode", "最終実行モード", "overwrite"),
+    ("error_content", "エラー内容", "overwrite"),
+    ("char_count", "文字数実績", "keep_if_empty"),
+    ("char_judge", "文字数判定", "keep_if_empty"),
+    ("image_status", "画像制作ステータス", "overwrite"),
+]
+
+# 画像チェックのみを反映する際に書き込む列キー（投稿系の列は触らない）
+IMAGE_ONLY_KEYS = {"image_status", "error_content", "updated_at"}
+
+
+def _norm_no(value: Any) -> str:
+    """No 値を比較用に正規化する（1 / 1.0 / '001' を同一視）。"""
+    s = safe_str(value)
+    if not s:
+        return ""
+    try:
+        return str(int(float(s)))
+    except ValueError:
+        return s.lower()
+
+
+def update_excel_results(
+    input_path: Path,
+    sheet: str | None,
+    results: list[dict[str, Any]],
+    only_keys: set[str] | None = None,
+) -> int:
+    """入力 Excel の該当シートへ投稿結果を No 一致で書き戻す。
+
+    他シートや書式を壊さないよう openpyxl で既存ブックを直接更新する。
+    既存の同名列があれば上書き、無ければ末尾に列を追加する。No が一致しない
+    結果は書き込まない（CSV には残るため追跡可能）。戻り値は更新した行数。
+    only_keys を指定すると、その結果キーに対応する列だけを書き込む
+    （画像チェックのみ反映するモードで使用）。
+    """
+    if input_path.suffix.lower() not in (".xlsx", ".xlsm"):
+        raise RuntimeError("--update-excel は .xlsx / .xlsm のみ対応です（CSV 入力は対象外）。")
+
+    from openpyxl import load_workbook  # 遅延 import（CSV 運用時は不要）
+
+    wb = load_workbook(input_path)
+    ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb[wb.sheetnames[0]]
+
+    # ヘッダー行（1 行目）を読み取り、列名 -> 列番号 を作る
+    header: dict[str, int] = {}
+    for col_idx, cell in enumerate(ws[1], start=1):
+        name = safe_str(cell.value)
+        if name:
+            header[name] = col_idx
+
+    # No 列を特定
+    no_col_name = find_col(list(header.keys()), COLUMN_CANDIDATES["no"])
+    if not no_col_name:
+        raise RuntimeError("Excel に No 列が見つからず、行を特定できません。")
+    no_col_idx = header[no_col_name]
+
+    # 書き込む列（only_keys 指定時はその列だけ）
+    write_cols = [c for c in EXCEL_RESULT_COLUMNS if only_keys is None or c[0] in only_keys]
+
+    # 出力列の列番号を決定（無ければ末尾に追加）
+    next_col = (max(header.values()) if header else 0) + 1
+    target_cols: dict[str, int] = {}
+    for key, col_name, _policy in write_cols:
+        if col_name in header:
+            target_cols[key] = header[col_name]
+        else:
+            ws.cell(row=1, column=next_col, value=col_name)
+            target_cols[key] = next_col
+            next_col += 1
+
+    # No -> 行番号 のマップを作る（データは 2 行目以降）
+    row_by_no: dict[str, int] = {}
+    for r in range(2, ws.max_row + 1):
+        key = _norm_no(ws.cell(row=r, column=no_col_idx).value)
+        if key and key not in row_by_no:
+            row_by_no[key] = r
+
+    updated = 0
+    for result in results:
+        row = row_by_no.get(_norm_no(result.get("no")))
+        if not row:
+            continue
+        for key, _col_name, policy in write_cols:
+            val = result.get(key, "")
+            cell = ws.cell(row=row, column=target_cols[key])
+            if policy == "keep_if_empty" and (val is None or val == ""):
+                continue  # 空なら既存セルを保持（日時・ID などを蓄積）
+            cell.value = val if val is not None else ""
+        updated += 1
+
+    wb.save(input_path)
+    return updated
+
+
+# --------------------------------------------------------------------------- #
+# WordPress クライアント
+# --------------------------------------------------------------------------- #
+# Imunify360（サーバー側のボット対策）は User-Agent を見て自動化を判定する。
+# "Mozilla/5.0 WordPress-Auto-Post/2.0" のように自動投稿ツールを名乗る文字列は
+# 遮断されるため、既定は通常のブラウザと同じ文字列を送る。
+# 環境変数 WP_USER_AGENT を設定すればそちらが優先される。
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+# 遮断されたときに待ってから試し直す回数と、待ち時間（秒）。
+# 遮断は断続的で、しばらく待つと通ることがある（実測: 14:11 JST に遮断され 18:19 JST に成功。
+# 35分後の再試行で通ったケースもある）。ただし待っている間も GitHub Actions の実行時間を
+# 消費するため、既定は控えめにする。待ち時間は回を追うごとに伸ばす（既定: 10分 → 20分）。
+# すぐ叩き直すことはしない。それはボット判定を強めるだけのため。
+# これでも通らない場合は、時間をおいてワークフローを再実行すること（.wp_blocked を参照）。
+BLOCK_RETRY_COUNT = int(os.environ.get("WP_BLOCK_RETRY_COUNT", "2").strip() or "2")
+BLOCK_RETRY_WAIT_SEC = float(os.environ.get("WP_BLOCK_RETRY_WAIT_SEC", "600").strip() or "600")
+
+# WordPress が 5xx を返したときに待ってから試し直す回数と、待ち時間（秒）。
+# 遮断とは別で、サーバー側の一時的な不調（PHP致命的エラー等）を想定する。
+# 実測: メディアアップロードが 500 internal_server_error で失敗した枠があり、
+# 同じ記事・同じ画像が後の枠では問題なく投稿できた。
+# 遮断ほど長くは待たない（数時間続くものではないため）。既定は 1分 → 2分。
+SERVER_ERROR_RETRY_COUNT = int(os.environ.get("WP_SERVER_ERROR_RETRY_COUNT", "2").strip() or "2")
+SERVER_ERROR_WAIT_SEC = float(os.environ.get("WP_SERVER_ERROR_WAIT_SEC", "60").strip() or "60")
+
+# 再試行を使い切って打ち切ったときに作る目印ファイル。
+# ワークフロー側はこれを見て「遮断で落ちた」と判断し、時間をおいて実行し直す。
+# 遮断以外の失敗（記事生成のエラー、画像の不備等）では作らないため、再実行の対象を絞れる。
+BLOCK_MARKER_PATH = os.environ.get("WP_BLOCKED_MARKER", "").strip() or ".wp_blocked"
+
+# 再開予定時刻の表示用。GitHub Actions のランナーはUTCで動くため、
+# ログにはJSTを出す（cronの枠も台帳もJSTで運用しているため）。
+JST = ZoneInfo("Asia/Tokyo")
+
+# 実行内で遮断を検知したかどうか（理由文字列。空なら未遮断）。
+# 一度遮断されると以降のリクエストも同じように弾かれるため、無駄打ちを避ける。
+_blocked_reason = ""
+
+# --dry-run 実行かどうか。dry-run では WordPress を変更しないのと同様、
+# ワークフローの再実行を促す目印ファイルも作らない。
+_dry_run = False
+
+
+class WordPressBlockedError(RuntimeError):
+    """サーバー側（Imunify360 等）にリクエストを遮断された状態。
+
+    間を空けた再試行（BLOCK_RETRY_COUNT 回）を使い切ってもなお遮断されている
+    ときにだけ送出される。この時点で以降のリクエストも通らないため、
+    呼び出し側はさらにリトライせず、その実行を打ち切ること。
+    """
+
+
+def extra_headers() -> dict[str, str]:
+    """WP_EXTRA_HEADERS で指定された追加ヘッダを読む（「名前: 値」を改行区切り）。
+
+    CloudflareのようなCDN/WAFを手前に置くと、GitHub Actionsからのアクセスは
+    データセンターのIPから来る自動化として弾かれる。送信元IPが固定でないため
+    IP許可は使えないので、代わりに共有シークレットをヘッダで送り、
+    WAF側で「このヘッダが一致したらセキュリティ機能を回避」する形で通す。
+
+    値はシークレットなのでログには出さない（名前だけ出す）。
+    """
+    headers: dict[str, str] = {}
+    for line in os.environ.get("WP_EXTRA_HEADERS", "").replace("\r", "").split("\n"):
+        name, sep, value = line.strip().partition(":")
+        if not sep:
+            continue
+        name, value = name.strip(), value.strip()
+        if name and value:
+            headers[name] = value
+    return headers
+
+
+def set_dry_run(value: bool) -> None:
+    """dry-run 実行であることを記録する（遮断の目印ファイルを作らないため）。"""
+    global _dry_run
+    _dry_run = bool(value)
+
+
+def is_blocked() -> bool:
+    """この実行内で既に遮断を検知しているか。"""
+    return bool(_blocked_reason)
+
+
+def blocked_reason() -> str:
+    return _blocked_reason
+
+
+def write_block_marker(reason: str) -> None:
+    """遮断で打ち切ったことをファイルに残す（ワークフローの再実行判定に使う）。"""
+    if _dry_run:
+        print("  dry-run のため遮断の目印ファイルは作成しません")
+        return
+    try:
+        Path(BLOCK_MARKER_PATH).write_text(reason, encoding="utf-8")
+    except Exception as exc:
+        print(f"  [警告] 遮断の目印ファイルを作成できませんでした: {exc}")
+
+
+class WordPressClient:
+    def __init__(self, base_url: str, username: str, app_password: str) -> None:
+        self.base_url = normalize_url(base_url)
+        self.api_base = f"{self.base_url}/wp-json/wp/v2"
+        self.session = requests.Session()
+        self.session.headers.update(basic_auth_header(username, app_password))
+        self.session.headers.update({
+            "User-Agent": os.environ.get("WP_USER_AGENT", "").strip() or DEFAULT_USER_AGENT,
+            "Accept": "application/json",
+            "Content-Type": "application/json; charset=utf-8",
+            # サーバー側キャッシュ（LiteSpeed等）から古い応答を受け取らない
+            "Cache-Control": "no-cache",
+            "Pragma": "no-cache",
+        })
+
+        # CDN/WAFを通すための追加ヘッダ（値はシークレットなので名前だけ出す）
+        additional = extra_headers()
+        if additional:
+            self.session.headers.update(additional)
+            print(f"  追加ヘッダを送信します: {', '.join(sorted(additional))}")
+
+        retry = Retry(
+            # 自動投稿では、遮断後の連続再試行がBot判定を強めるため最小限にする。
+            # HTTPステータスによる再試行はここでは行わない（間を空けずに叩き直す
+            # ことになり、ボット判定を強めるだけのため）。429/5xx は send() 側で
+            # 遮断の判定と 5xx の再試行として、間を空けて扱う。
+            total=1,
+            backoff_factor=1,
+            status_forcelist=[],
+            allowed_methods=["GET", "POST"],
+            raise_on_status=False,
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+
+        self._term_cache: dict[tuple[str, str], int] = {}
+
+    def _send_once(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """1回分の送信。5xx（サーバー側の一時的な不調）だけ間を空けて試し直す。
+
+        遮断とは別物として扱う。遮断は数時間続くことがあるので長く待つが、
+        5xx はサーバーが一時的に落ちているだけのことが多く、数分で復帰する。
+        実測: メディアアップロードが 500 で失敗した枠があり、同じ記事・同じ画像が
+        後の枠では問題なく投稿できた。遮断の可能性がある応答はここでは扱わず、
+        呼び出し元（send）の遮断判定に任せる。
+        """
+        response = self.session.request(method, url, **kwargs)
+        for attempt in range(SERVER_ERROR_RETRY_COUNT):
+            if response.status_code < 500 or detect_block(response):
+                return response
+            sleep_sec = SERVER_ERROR_WAIT_SEC * (attempt + 1)
+            print(
+                f"::warning title=WordPress server error::"
+                f"WordPressが HTTP {response.status_code} を返しました。"
+                f"{sleep_sec / 60:.0f}分待って再試行します"
+                f"（{attempt + 1}/{SERVER_ERROR_RETRY_COUNT}回目）",
+                flush=True,
+            )
+            print(f"  応答の詳細: {response_hint(response)}", flush=True)
+            time.sleep(sleep_sec)
+            response = self.session.request(method, url, **kwargs)
+            if response.status_code < 500:
+                print(f"  サーバーエラーが解消しました（{attempt + 1}回目の再試行で成功）", flush=True)
+        return response
+
+    def send(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """WordPress への HTTP リクエストを1本にまとめた入口。
+
+        - 既に遮断されていれば送信せず WordPressBlockedError を投げる（無駄打ちの防止）
+        - 遮断されたら BLOCK_RETRY_COUNT 回まで、間を空けて試し直す
+          （待ち時間は回を追うごとに伸ばす。既定は 10分 → 20分）
+        - それでも通らなければ目印ファイルを残し、以降のリクエストを一切送らない
+
+        遮断はステータスコードの前に判定する。Imunify360 は HTTP 200 のまま
+        HTMLのチャレンジページやJSONの拒否メッセージを返すことがあるため。
+        """
+        global _blocked_reason
+
+        if _blocked_reason:
+            raise WordPressBlockedError(_blocked_reason)
+
+        for attempt in range(BLOCK_RETRY_COUNT + 1):
+            response = self._send_once(method, url, **kwargs)
+
+            reason = detect_block(response)
+            if not reason:
+                if attempt > 0:
+                    print(f"  遮断が解除されました（{attempt}回目の再試行で成功）", flush=True)
+                return response
+
+            # 遮断と判定した応答が、どこから返ってきたものかを残す。
+            # これが無いと Cloudflare のブロックなのか、オリジンの不調なのかを
+            # ログから切り分けられない（実際に切り分けられず調査が止まった）。
+            print(f"  応答の詳細: {response_hint(response)}", flush=True)
+
+            # 待てば通ることがあるため、回数が残っていれば間を空けて試し直す。
+            # 連打はボット判定を強めるので、待ち時間は回を追うごとに伸ばす。
+            #
+            # ここからの print は必ず flush する。GitHub Actions では標準出力が
+            # ブロックバッファリングになり、既定ではプロセス終了までログに出ない。
+            # 「何も出ないまま10分止まる」状態になると、遮断で待っているのか
+            # 通信がハングしているのか実行中に判別できなくなるため。
+            if attempt < BLOCK_RETRY_COUNT:
+                sleep_sec = BLOCK_RETRY_WAIT_SEC * (attempt + 1)
+                resume_at = dt.datetime.now(JST) + dt.timedelta(seconds=sleep_sec)
+                print(
+                    f"::warning title=WordPress blocked::{reason} "
+                    f"{sleep_sec / 60:.0f}分待って再試行します"
+                    f"（{attempt + 1}/{BLOCK_RETRY_COUNT}回目 / "
+                    f"{resume_at.strftime('%H:%M')} JST 再開予定）",
+                    flush=True,
+                )
+                time.sleep(sleep_sec)
+                continue
+
+            _blocked_reason = reason
+            write_block_marker(reason)
+            print(
+                f"::error title=WordPress blocked::{reason} "
+                f"{BLOCK_RETRY_COUNT}回再試行しても解除されなかったため、"
+                "以降のリクエストは送信しません",
+                flush=True,
+            )
+            raise WordPressBlockedError(reason)
+
+        # BLOCK_RETRY_COUNT を負値にされた場合の保険（通常は到達しない）
+        raise WordPressBlockedError(_blocked_reason or "サーバー側にリクエストを遮断されました")
+
+    def request(self, method: str, endpoint: str, **kwargs: Any) -> Any:
+        url = f"{self.api_base}/{endpoint.lstrip('/')}"
+        kwargs.setdefault("timeout", 90)
+        if method.upper() == "GET":
+            # URLをキーにするサーバーキャッシュ対策：毎回ユニークなパラメータを付ける。
+            # 「投稿が存在しない」時代の応答がキャッシュされ既存判定が空振りし続けると、
+            # upsert が毎回新規作成して重複記事を量産してしまう（実際に発生した）。
+            params = kwargs.get("params")
+            if not isinstance(params, dict):
+                params = {}
+            params.setdefault("_nocache", str(int(time.time() * 1000)))
+            kwargs["params"] = params
+        response = self.send(method, url, **kwargs)
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"WordPress API エラー {extract_api_error(response)}")
+        if not response.text:
+            return None
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RuntimeError(
+                f"WordPress APIがJSON以外の応答を返しました（HTTP {response.status_code}）"
+            ) from exc
+        return data
+
+    def verify_auth(self) -> str:
+        """認証確認。失敗時は分かりやすい例外を投げる。"""
+        me = self.request("GET", "users/me")
+        return me.get("name") or me.get("slug") or "(unknown)"
+
+    def find_or_create_term(
+        self,
+        taxonomy: str,
+        name: str,
+        parent: int = 0,
+        skip_search: bool = False,
+    ) -> int:
+        name = name.strip()
+        if not name:
+            return 0
+        cache_key = (taxonomy, name.lower(), parent)
+        if cache_key in self._term_cache:
+            return self._term_cache[cache_key]
+
+        endpoint = "categories" if taxonomy == "category" else "tags"
+        if skip_search:
+            # Imunify360等が検索GETを遮断する環境では、作成APIだけを呼ぶ。
+            # 既存タームならWordPressの term_exists 応答から既存IDを回収する。
+            term_id = self._create_term(
+                endpoint, name, parent if taxonomy == "category" else 0
+            )
+            self._term_cache[cache_key] = term_id
+            return term_id
+
+        # 親フィルタは付けず名前で検索し、親の一致はコード側で判定する
+        # （REST の parent フィルタで既存を取りこぼすケースを避けるため）
+        data = self.request("GET", endpoint, params={"search": name, "per_page": 100})
+        term_id = 0
+        for item in (data if isinstance(data, list) else []):
+            if safe_str(item.get("name")).lower() != name.lower():
+                continue
+            # カテゴリは親が一致するものだけ採用（同名の子を別親の下で誤用しない）
+            if taxonomy == "category" and int(item.get("parent", 0) or 0) != parent:
+                continue
+            term_id = int(item["id"])
+            break
+        if not term_id:
+            term_id = self._create_term(
+                endpoint, name, parent if taxonomy == "category" else 0
+            )
+
+        self._term_cache[cache_key] = term_id
+        return term_id
+
+    def _create_term(self, endpoint: str, name: str, parent: int) -> int:
+        """ターム作成。既に存在（term_exists）していれば既存IDを回収して返す。"""
+        body: dict[str, Any] = {"name": name}
+        if parent:
+            body["parent"] = parent
+        url = f"{self.api_base}/{endpoint}"
+        # 応答の解釈だけこの関数で行い、送信と遮断の判定は send() に任せる。
+        # 以前はここで session.request() を直に呼び RuntimeError を投げていたため、
+        # 遮断でも WordPressBlockedError にならず、台帳ループの打ち切りや
+        # 遮断時の再試行が働いていなかった。
+        resp = self.send("POST", url, json=body, timeout=90)
+
+        err: dict[str, Any] = {}
+        try:
+            parsed = resp.json()
+            if isinstance(parsed, dict):
+                err = parsed
+        except Exception:
+            err = {}
+        if resp.status_code < 400:
+            if err.get("id"):
+                return int(err["id"])
+            raise RuntimeError(
+                f"WordPress APIがタームIDのない応答を返しました（HTTP {resp.status_code}）"
+            )
+        # 検索で取りこぼしても、term_exists の応答には既存 term_id が入る
+        if err.get("code") == "term_exists":
+            data = err.get("data")
+            term_id = 0
+            if isinstance(data, dict):
+                raw = data.get("term_id")
+                if isinstance(raw, dict):  # 稀に入れ子で返るサイト対策
+                    raw = raw.get("term_id")
+                term_id = int(raw or 0)
+            if term_id:
+                return term_id
+        raise RuntimeError(f"WordPress API エラー {extract_api_error(resp)}")
+
+    def category_exists(self, term_id: int) -> bool:
+        """カテゴリIDが実在するか（親参照が壊れていないか）を確認する。"""
+        if not term_id:
+            return False
+        try:
+            data = self.request("GET", f"categories/{term_id}")
+        except RuntimeError:
+            return False
+        return isinstance(data, dict) and bool(data.get("id"))
+
+    def find_or_create_category_path(self, path_str: str, skip_search: bool = False) -> int:
+        """"親 > 子 > 孫" の形式を解釈し、親子関係を作って末端カテゴリのIDを返す。
+
+        区切りが無ければ単一カテゴリとして扱う。
+        親タームが壊れている/消えている場合（rest_term_invalid）は、親を作り直して
+        1段戻り、子作成を再試行する（過去の作成・削除で階層が不整合になった環境対策）。
+        """
+        parts = [p.strip() for p in re.split(r"[>＞›»＞]", path_str) if p.strip()]
+        if not parts:
+            return 0
+
+        ids: list[int] = []
+        idx = 0
+        guard = 0
+        while idx < len(parts):
+            guard += 1
+            if guard > len(parts) * 3 + 3:
+                break  # 無限ループ防止
+            name = parts[idx]
+            parent = ids[idx - 1] if idx > 0 else 0
+            # 親が実在しないなら、親を作り直すため1段戻る
+            if idx > 0 and not skip_search and not self.category_exists(parent):
+                pname = parts[idx - 1]
+                gparent = ids[idx - 2] if idx >= 2 else 0
+                self._term_cache.pop(("category", pname.lower(), gparent), None)
+                ids.pop()
+                idx -= 1
+                continue
+            try:
+                tid = self.find_or_create_term("category", name, parent=parent, skip_search=skip_search)
+            except RuntimeError as exc:
+                if idx > 0 and "rest_term_invalid" in str(exc):
+                    pname = parts[idx - 1]
+                    gparent = ids[idx - 2] if idx >= 2 else 0
+                    self._term_cache.pop(("category", pname.lower(), gparent), None)
+                    ids.pop()
+                    idx -= 1
+                    continue
+                raise
+            if idx < len(ids):
+                ids[idx] = tid
+            else:
+                ids.append(tid)
+            idx += 1
+        return ids[-1] if ids else 0
+
+    def find_post_by_slug(self, slug: str, status: str) -> dict[str, Any] | None:
+        if not slug:
+            return None
+        # draft/pending を検索するには context=edit と全 status 指定が必要
+        params = {
+            "slug": slug,
+            "status": "publish,future,draft,pending,private",
+            "context": "edit",
+            "per_page": 10,
+        }
+        data = self.request("GET", "posts", params=params)
+        if isinstance(data, list):
+            return data[0] if data else None
+        if isinstance(data, dict) and data.get("id"):
+            return data  # まれに単一オブジェクトを返すサイトに対応
+        # 検索失敗を「既存なし」と扱うと、リトライのたびに -2/-3 が
+        # 生成される。判定できないときはフェイルクローズで投稿も止める。
+        raise RuntimeError(
+            "投稿検索の応答が配列でないため、"
+            f"重複防止のため新規作成を中止します: {str(data)[:200]}"
+        )
+
+    def find_post_by_title(self, title: str, status: str) -> dict[str, Any] | None:
+        """タイトル完全一致で既存投稿を探す。
+
+        下書き/保留は post_name（slug）が空になりがちで find_post_by_slug では
+        見つからないため、そのフォールバックとして使う。
+        """
+        if not title:
+            return None
+        params = {
+            "search": title,
+            "status": "publish,future,draft,pending,private",
+            "context": "edit",
+            "per_page": 20,
+        }
+        data = self.request("GET", "posts", params=params)
+        if not isinstance(data, list):
+            raise RuntimeError(
+                "タイトル検索の応答が配列でないため、"
+                f"重複防止のため新規作成を中止します: {str(data)[:200]}"
+            )
+        target = title.strip()
+        for post in data:
+            title_obj = post.get("title") or {}
+            raw = safe_str(title_obj.get("raw"))
+            rendered = safe_str(title_obj.get("rendered"))
+            if target in (raw, rendered):
+                return post
+        return None
+
+    @staticmethod
+    def _post_search_text(post: dict[str, Any]) -> str:
+        values = [safe_str(post.get("slug"))]
+        # まとめ記事の本文にCVEが列挙されるのは正常なため、contentは対象外。
+        # 投稿そのものの主題を表す slug/title/excerpt だけで完全一致させる。
+        for field in ("title", "excerpt"):
+            value = post.get(field) or {}
+            if isinstance(value, dict):
+                values.extend([safe_str(value.get("raw")), safe_str(value.get("rendered"))])
+            else:
+                values.append(safe_str(value))
+        return "\n".join(values)
+
+    def find_posts_by_cves(self, cves: list[str]) -> list[dict[str, Any]]:
+        """CVE番号の完全一致を、全ての有効な投稿状態から探す。"""
+        normalized = sorted(
+            {
+                match.group(0).upper()
+                for value in cves
+                for match in re.finditer(r"(?<![A-Z0-9-])CVE-\d{4}-\d{4,}(?![A-Z0-9-])", value or "", re.I)
+            }
+        )
+        found: dict[int, dict[str, Any]] = {}
+        for cve in normalized:
+            params = {
+                "search": cve,
+                "status": "publish,future,draft,pending,private",
+                "context": "edit",
+                "per_page": 50,
+            }
+            data = self.request("GET", "posts", params=params)
+            if not isinstance(data, list):
+                raise RuntimeError(
+                    f"{cve} の既存投稿検索に失敗したため、"
+                    "重複防止のため新規作成を中止します"
+                )
+            exact = re.compile(rf"(?<![A-Z0-9-]){re.escape(cve)}(?![A-Z0-9-])", re.I)
+            for post in data:
+                if not isinstance(post, dict) or not exact.search(self._post_search_text(post)):
+                    continue
+                post_id = int(post.get("id") or 0)
+                if post_id:
+                    found[post_id] = post
+        return list(found.values())
+
+    def find_posts_by_slug_variants(self, slug: str, max_suffix: int = 20) -> list[dict[str, Any]]:
+        """slug と slug-2..slug-N を、ゴミ箱も含む全ステータスから探す（保守用）。"""
+        if not slug:
+            return []
+        variants = [slug] + [f"{slug}-{i}" for i in range(2, max_suffix + 1)]
+        params = {
+            "slug": ",".join(variants),
+            "status": "publish,future,draft,pending,private,trash",
+            "context": "edit",
+            "per_page": 100,
+        }
+        try:
+            data = self.request("GET", "posts", params=params)
+        except RuntimeError:
+            # trash の一覧取得を拒否するサイト向けフォールバック
+            params["status"] = "publish,future,draft,pending,private"
+            data = self.request("GET", "posts", params=params)
+        if not isinstance(data, list):
+            print(f"    [注意] スラッグ検索の応答が配列ではありません: {str(data)[:200]}")
+            return []
+        return data
+
+    def find_posts_by_title_all(self, title: str) -> list[dict[str, Any]]:
+        """タイトル完全一致の投稿を、ゴミ箱も含めて全て返す（保守用）。"""
+        if not title:
+            return []
+        params = {
+            "search": title,
+            "status": "publish,future,draft,pending,private,trash",
+            "context": "edit",
+            "per_page": 50,
+        }
+        try:
+            data = self.request("GET", "posts", params=params)
+        except RuntimeError as exc:
+            print(f"    [注意] タイトル検索でエラー: {str(exc)[:200]}")
+            return []
+        if not isinstance(data, list):
+            print(f"    [注意] タイトル検索の応答が配列ではありません: {str(data)[:200]}")
+            return []
+        target = title.strip()
+        matches = []
+        for post in data:
+            title_obj = post.get("title") or {}
+            if target in (safe_str(title_obj.get("raw")), safe_str(title_obj.get("rendered"))):
+                matches.append(post)
+        return matches
+
+    def delete_post_permanently(self, post_id: int) -> bool:
+        """投稿をゴミ箱を経由せず完全削除する。"""
+        data = self.request("DELETE", f"posts/{post_id}", params={"force": "true"})
+        return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
+
+    def get_media_source_url(self, media_id: int) -> str:
+        """メディアIDから配信URL（source_url）を取得する。失敗時は空文字。"""
+        if not media_id:
+            return ""
+        try:
+            data = self.request("GET", f"media/{media_id}")
+        except RuntimeError:
+            return ""
+        return safe_str((data or {}).get("source_url")) if isinstance(data, dict) else ""
+
+    def list_media_page(self, page: int) -> list[dict[str, Any]]:
+        """メディアライブラリの画像を100件ずつ取得する。範囲外ページは空リスト。"""
+        params = {
+            "per_page": 100,
+            "page": page,
+            "media_type": "image",
+            "context": "edit",
+        }
+        try:
+            data = self.request("GET", "media", params=params)
+        except RuntimeError:
+            return []  # ページ範囲外（rest_post_invalid_page_number）等
+        return data if isinstance(data, list) else []
+
+    def delete_media_permanently(self, media_id: int) -> bool:
+        """メディア（添付ファイル）を完全削除する。"""
+        data = self.request("DELETE", f"media/{media_id}", params={"force": "true"})
+        return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
+
+    def find_media_uploaded_since(
+        self, filename: str, since: dt.datetime
+    ) -> tuple[int, str] | None:
+        """直前にアップロードされたメディアを、ファイル名の先頭一致で探す。
+
+        WordPress は同名ファイルに -1, -2 … と連番を付けるため、完全一致では
+        見つからない。since 以降に作られた中で最も新しいものを、いま送った画像と
+        みなす。
+        """
+        stem = Path(filename).stem
+        try:
+            data = self.request(
+                "GET",
+                "media",
+                params={
+                    "search": stem,
+                    "per_page": 20,
+                    "orderby": "date",
+                    "order": "desc",
+                    "context": "edit",
+                },
+            )
+        except Exception:
+            return None
+        if not isinstance(data, list):
+            return None
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            source_url = safe_str(item.get("source_url"))
+            if not source_url.rsplit("/", 1)[-1].startswith(stem):
+                continue
+            raw = safe_str(item.get("date_gmt"))
+            try:
+                created = dt.datetime.fromisoformat(raw).replace(tzinfo=dt.timezone.utc)
+            except ValueError:
+                continue
+            if created >= since:
+                return int(item.get("id") or 0), source_url
+        return None
+
+    def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
+        """画像をアップロードし (media_id, source_url) を返す。"""
+        mime_type, _ = mimetypes.guess_type(str(image_path))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+        headers = {
+            "Content-Disposition": f'attachment; filename="{image_path.name}"',
+            "Content-Type": mime_type,
+        }
+        # 遮断されたときの再試行で同じ本文を送り直せるよう、ファイルオブジェクトでは
+        # なくバイト列を渡す（読み終わった後のファイルを再送すると中身が空になる）。
+        payload = image_path.read_bytes()
+
+        # 大きなバイナリのアップロードは、WordPress側でファイルが作られていても
+        # 応答だけがWAFに503のHTMLへ差し替えられて返ることがある（実測）。
+        # これを失敗とみなして送り直すと、同じ画像がサイトに何枚も溜まる。
+        # 実際に No.32 のアイキャッチは、8月・9月の再試行で未使用メディアが
+        # 17件まで増えていた。まず作成済みかどうかを確認してから再試行する。
+        response = None
+        if not _blocked_reason:
+            since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=2)
+            first = self._send_once(
+                "POST",
+                f"{self.api_base}/media",
+                headers=headers,
+                data=payload,
+                timeout=300,
+            )
+            if not detect_block(first):
+                response = first
+            else:
+                print(f"  応答の詳細: {response_hint(first)}", flush=True)
+                landed = self.find_media_uploaded_since(image_path.name, since)
+                if landed and landed[0]:
+                    media_id, source_url = landed
+                    print(
+                        "  アップロードの応答は遮断されましたが、メディアは作成済みでした"
+                        f"（id={media_id}）。送り直さずにこれを使います",
+                        flush=True,
+                    )
+                    if alt_text:
+                        try:
+                            self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
+                        except Exception as exc:
+                            print(f"  [警告] 代替テキストを設定できませんでした: {exc}", flush=True)
+                    return media_id, source_url
+                print("  メディアは作成されていませんでした。通常の再試行に入ります", flush=True)
+
+        if response is None:
+            response = self.send(
+                "POST",
+                f"{self.api_base}/media",
+                headers=headers,
+                data=payload,
+                timeout=300,
+            )
+        if response.status_code >= 400:
+            raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
+        media = response.json()
+        media_id = int(media["id"])
+        source_url = media.get("source_url", "")
+        if alt_text:
+            self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
+        return media_id, source_url
+
+    def create_post(
+        self,
+        *,
+        title: str,
+        content_html: str,
+        slug: str,
+        excerpt: str,
+        status: str,
+        category_ids: list[int],
+        tag_ids: list[int],
+        featured_media: int | None,
+        post_id: int | None = None,
+        focus_keyword: str = "",
+        seo_title: str = "",
+        seo_description: str = "",
+        geo_meta: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "title": title,
+            "content": content_html,
+            "status": status,
+            "slug": slug,
+            "excerpt": excerpt,
+        }
+        if category_ids:
+            payload["categories"] = category_ids
+        if tag_ids:
+            payload["tags"] = tag_ids
+        if featured_media:
+            payload["featured_media"] = featured_media
+        # Rank Math メタ（重要なキーワード・SEOタイトル・メタ説明）を設定する。
+        # ※ WP 側で各メタが show_in_rest=true 登録されている場合のみ保存される
+        #    （未登録だと WordPress 側で無視される）。
+        meta: dict[str, Any] = {}
+        if focus_keyword:
+            meta["rank_math_focus_keyword"] = focus_keyword
+        if seo_title:
+            meta["rank_math_title"] = seo_title
+        if seo_description:
+            meta["rank_math_description"] = seo_description
+        # CyberNote GEO Kit のメタ（結論・関連CVE・FAQ・出典）を同じ meta に載せる。
+        # ※ wp-content/mu-plugins/cng-geo-rest.php で REST 公開しておく必要がある
+        #    （未設置だと WordPress 側で無視され、保存確認ログで検知できる）。
+        for key, value in (geo_meta or {}).items():
+            if value:
+                meta[key] = value
+        if meta:
+            payload["meta"] = meta
+        endpoint = f"posts/{post_id}" if post_id else "posts"
+        return self.request("POST", endpoint, json=payload)
+
+
+# --------------------------------------------------------------------------- #
+# Rank Math フォーカスキーワード
+# --------------------------------------------------------------------------- #
+def derive_focus_keyword(kw: str, title: str) -> str:
+    """Rank Math のフォーカスキーワード（重要なキーワード）を決める。
+
+    タイトルに入っている記事のキーワードを使う。
+      1. 指定KW があればそれを使う（前後空白を除去）
+      2. 空の場合はタイトルの主要部（区切り記号より前）を使う
+    """
+    kw = safe_str(kw)
+    if kw:
+        return kw
+    # タイトルの区切り記号（｜ | ／ / ： :）より前をキーワードとして使う
+    head = title
+    for sep in ("｜", "|", "／", "/", "：", ":", "〖", "【"):
+        if sep in head:
+            head = head.split(sep, 1)[0]
+    return head.strip()
+
+
+def align_focus_keyword(kw: str, title: str) -> str:
+    """Rank Math のフォーカスキーワードを本文の表記へ寄せる。
+
+    日本語は分かち書きしないため、指定KWの半角スペースを詰め、
+    `wordpress` の表記ゆれを `WordPress` に統一する。
+    例: 「wordpress セキュリティ」→「WordPressセキュリティ」
+    こうすることで、タイトル・本文・見出しとの一致率が上がり、
+    Rank Math のキーワード判定（タイトル/先頭/密度）が改善する。
+    """
+    base = derive_focus_keyword(kw, title)
+    joined = re.sub(r"\s+", "", base)
+    joined = re.sub(r"wordpress", "WordPress", joined, flags=re.IGNORECASE)
+    return joined
+
+
+def build_seo_title(title: str) -> str:
+    """Rank Math「タイトルの読みやすさ」の数字要件を満たすSEOタイトルを作る。
+
+    既に数字を含むタイトルはそのまま。含まないものだけ「（2026年版）」を付ける。
+    投稿タイトル自体は変更せず、Rank Math の rank_math_title にのみ使う。
+    """
+    title = safe_str(title).strip()
+    if not title or re.search(r"\d", title):
+        return title
+    return f"{title}（2026年版）"
+
+
+# --------------------------------------------------------------------------- #
+# メイン
+# --------------------------------------------------------------------------- #
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="WordPress 自動投稿スクリプト")
+    parser.add_argument("--input", required=True, help="制作管理表（XLSX/CSV）のパス")
+    parser.add_argument("--sheet", default=None, help="Excel シート名")
+    parser.add_argument("--articles-dir", default="articles")
+    parser.add_argument("--images-dir", default="eyecatches")
+    parser.add_argument("--post-status", default="draft", choices=["draft", "pending", "publish"])
+    parser.add_argument("--limit", type=int, default=0, help="投稿件数。0 で全件")
+    parser.add_argument("--dry-run", action="store_true", help="投稿せず確認だけ行う")
+    parser.add_argument(
+        "--skip-auth-check",
+        action="store_true",
+        help="投稿前のusers/me認証確認を省略する（投稿リクエストで認証結果を判定）",
+    )
+    parser.add_argument(
+        "--skip-internal-link-resolution",
+        action="store_true",
+        help="既存記事の実URL解決を省略し、管理簿・スラッグ由来のURLを使う",
+    )
+    parser.add_argument(
+        "--slug-only-existing-check",
+        action="store_true",
+        help="既存投稿確認をスラッグ検索だけに限定し、タイトル検索を省略する",
+    )
+    parser.add_argument(
+        "--skip-existing-check",
+        action="store_true",
+        help="既存投稿・ターム検索のGETを省略する（create_only専用。管理簿で重複を管理する場合に使用）",
+    )
+    parser.add_argument("--sleep", type=float, default=1.0, help="投稿間の待機秒数")
+    parser.add_argument("--keep-h1", action="store_true", help="本文先頭の H1 を除去しない")
+    parser.add_argument(
+        "--write-mode",
+        default="create_only",
+        choices=["create_only", "update_only", "upsert"],
+        help="create_only: 新規のみ / update_only: 既存のみ更新 / upsert: 既存は更新、なければ新規作成",
+    )
+    parser.add_argument(
+        "--allow-duplicate",
+        action="store_true",
+        help="（非推奨）--write-mode upsert と同じ。後方互換のため残置",
+    )
+    parser.add_argument("--output-dir", default=".", help="結果 CSV の出力先")
+    parser.add_argument(
+        "--category",
+        default="",
+        help="全記事のカテゴリをこの値に統一する（Excelの WPカテゴリ 列を無視）。例: ブログ",
+    )
+    parser.add_argument(
+        "--nos",
+        default="",
+        help="投稿する No を範囲・カンマで指定。例: 2-10,13-15,20（空なら全件）",
+    )
+    parser.add_argument(
+        "--no-gutenberg-blocks",
+        action="store_true",
+        help="本文を Gutenberg ブロックに変換せず HTML のまま投稿する（既定は変換）",
+    )
+    parser.add_argument(
+        "--update-excel",
+        action="store_true",
+        help="入力 Excel の該当シートへ投稿結果（ステータス/ID/URL/日時/エラー）を書き戻す",
+    )
+    parser.add_argument(
+        "--check-images-only",
+        action="store_true",
+        help="WordPress 投稿を行わず、アイキャッチ画像のチェック結果だけを出力する",
+    )
+    parser.add_argument(
+        "--no-inline-eyecatch",
+        action="store_true",
+        help="アイキャッチ画像を本文先頭に差し込まない（既定は差し込む）",
+    )
+    parser.add_argument(
+        "--list-managed",
+        action="store_true",
+        help="管理表の記事に対応するサイト上の投稿（重複・ゴミ箱含む）を一覧表示して終了",
+    )
+    parser.add_argument(
+        "--delete-managed",
+        action="store_true",
+        help="管理表の記事に対応するサイト上の投稿（重複含む）を完全削除して終了",
+    )
+    parser.add_argument(
+        "--fallback-media-id",
+        default="",
+        help=(
+            "アイキャッチが壊れている・見つからない場合に使う既定画像のメディアID。"
+            "未指定なら環境変数 WP_FALLBACK_MEDIA_ID を見る。どちらも無ければ従来どおり記事をエラーにする"
+        ),
+    )
+    parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="--delete-managed / --cleanup-media の確認プロンプトをスキップ",
+    )
+    parser.add_argument(
+        "--cleanup-media",
+        action="store_true",
+        help="重複アップロードされたアイキャッチ画像（未使用世代）を完全削除して終了",
+    )
+    parser.add_argument(
+        "--force-image-upload",
+        action="store_true",
+        help="更新時も画像を再アップロードする（既定は既存アイキャッチを再利用）",
+    )
+    return parser.parse_args()
+
+
+def run_managed_maintenance(
+    wp: "WordPressClient",
+    df: "pd.DataFrame",
+    col: dict[str, str | None],
+    no_filter: set[int] | None,
+    delete: bool,
+    assume_yes: bool,
+) -> None:
+    """管理表の記事に対応するサイト上の投稿（重複・ゴミ箱含む）を一覧表示／完全削除する。
+
+    スラッグ（-2..-20 の連番サフィックス込み）とタイトル完全一致の両方で探すため、
+    過去の実行で重複作成された投稿もまとめて対象になる。
+    """
+    rows: list[tuple[str, str, str]] = []
+    for idx, row in df.iterrows():
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(idx + 1)
+        n_int = no_to_int(no_value)
+        if no_filter is not None and (n_int is None or n_int not in no_filter):
+            continue
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        if title or slug:
+            rows.append((no_value, slug, title))
+
+    print(f"\n=== サイト上の管理対象投稿を調査（{len(rows)} 記事分） ===")
+    found: dict[int, dict[str, Any]] = {}
+    for no_value, slug, title in rows:
+        merged: dict[int, dict[str, Any]] = {}
+        for post in wp.find_posts_by_slug_variants(slug) + wp.find_posts_by_title_all(title):
+            pid = int(post.get("id") or 0)
+            if pid:
+                merged[pid] = post
+        if not merged:
+            continue
+        print(f"  No.{no_value}: {len(merged)} 件")
+        for pid, post in sorted(merged.items()):
+            date = safe_str(post.get("date")).replace("T", " ")[:16]
+            print(
+                f"    - id={pid} status={safe_str(post.get('status'))} "
+                f"slug={safe_str(post.get('slug'))} ({date})"
+            )
+            found[pid] = post
+
+    print(f"\n  合計: {len(found)} 件の投稿がサイト上にあります。")
+    if not delete:
+        if found:
+            print("  削除する場合は MODE=delete で実行してください（完全削除・ゴミ箱に残りません）。")
+        return
+    if not found:
+        print("  削除対象はありません。")
+        return
+
+    if not assume_yes:
+        answer = input(
+            f"  上記 {len(found)} 件を完全削除します（ゴミ箱に残りません）。よろしいですか？ [yes/N]: "
+        ).strip().lower()
+        if answer not in ("y", "yes"):
+            print("  中止しました。")
+            return
+
+    deleted = 0
+    failed = 0
+    for pid, post in sorted(found.items()):
+        title_obj = post.get("title") or {}
+        label = safe_str(title_obj.get("rendered")) or safe_str(post.get("slug")) or str(pid)
+        try:
+            ok = wp.delete_post_permanently(pid)
+        except RuntimeError as exc:
+            ok = False
+            print(f"    [ERROR] id={pid} {label} -> {str(exc)[:150]}")
+        if ok:
+            deleted += 1
+            print(f"    [DELETED] id={pid} {label}")
+        else:
+            failed += 1
+    print(f"\n=== 削除サマリ ===\n  削除: {deleted} 件 / 失敗: {failed} 件")
+    if failed == 0 and deleted:
+        print("  きれいになりました。次は MODE=post / WRITE_MODE=create_only で全件を作成してください。")
+
+
+def run_media_cleanup(
+    wp: "WordPressClient",
+    df: "pd.DataFrame",
+    col: dict[str, str | None],
+    assume_yes: bool,
+) -> None:
+    """重複アップロードされたアイキャッチ画像を整理する。
+
+    対象: 管理表の「画像ファイル名」（001.jpg 等）に由来する添付ファイル
+          （WordPress が付けた 001-1 / 001-scaled 等の派生名を含む）。
+    保護: 各記事のアイキャッチ（featured_media）と、本文中で参照されている
+          画像URL。それ以外の世代だけを完全削除する。
+    """
+    # ---- 管理対象の画像ファイル名の語幹（001 等）を集める --------------------
+    stems: set[str] = set()
+    slugs: list[str] = []
+    for idx, row in df.iterrows():
+        image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
+        if image_name:
+            stems.add(Path(image_name).stem.lower())
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        if slug:
+            slugs.append(slug)
+    if not stems:
+        print("  管理表に画像ファイル名がないため対象なし。")
+        return
+
+    # ---- 使用中の画像を保護リストに入れる -----------------------------------
+    print(f"\n=== 使用中のアイキャッチを確認（{len(slugs)} 記事） ===")
+    protected_ids: set[int] = set()
+    protected_basenames: set[str] = set()
+    for slug in slugs:
+        post = wp.find_post_by_slug(slug, "publish")
+        if not post:
+            continue
+        fm = int(post.get("featured_media") or 0)
+        if fm:
+            protected_ids.add(fm)
+        content_obj = post.get("content") or {}
+        content = safe_str(content_obj.get("raw")) or safe_str(content_obj.get("rendered"))
+        for src in re.findall(r'src="([^"]+)"', content):
+            protected_basenames.add(Path(src.split("?")[0]).name.lower())
+    print(f"  保護対象: featured {len(protected_ids)} 件 / 本文参照 {len(protected_basenames)} ファイル名")
+
+    # ---- メディアライブラリを走査して削除候補を集める ------------------------
+    stem_pattern = re.compile(
+        r"^(" + "|".join(re.escape(s) for s in sorted(stems)) + r")(-[a-z0-9]+)*$"
+    )
+    candidates: list[dict[str, Any]] = []
+    scanned = 0
+    page = 1
+    while True:
+        items = wp.list_media_page(page)
+        if not items:
+            break
+        scanned += len(items)
+        for item in items:
+            source_url = safe_str(item.get("source_url")).split("?")[0]
+            basename = Path(source_url).name.lower()
+            stem = Path(basename).stem
+            if not stem_pattern.match(stem):
+                continue  # 管理対象外の画像（他の記事の画像など）は触らない
+            media_id = int(item.get("id") or 0)
+            if media_id in protected_ids or basename in protected_basenames:
+                continue
+            candidates.append({"id": media_id, "file": basename})
+        if len(items) < 100:
+            break
+        page += 1
+
+    print(f"\n=== メディア走査結果 ===")
+    print(f"  画像 {scanned} 件を確認 → 削除候補 {len(candidates)} 件（使用中は除外済み）")
+    if not candidates:
+        print("  削除する重複はありません。")
+        return
+
+    for c in candidates[:10]:
+        print(f"    - id={c['id']} {c['file']}")
+    if len(candidates) > 10:
+        print(f"    …ほか {len(candidates) - 10} 件")
+
+    if not assume_yes:
+        answer = input(
+            f"  上記 {len(candidates)} 件の画像を完全削除します。よろしいですか？ [yes/N]: "
+        ).strip().lower()
+        if answer not in ("y", "yes"):
+            print("  中止しました。")
+            return
+
+    deleted = 0
+    failed = 0
+    for c in candidates:
+        try:
+            ok = wp.delete_media_permanently(c["id"])
+        except RuntimeError as exc:
+            ok = False
+            print(f"    [ERROR] id={c['id']} {c['file']} -> {str(exc)[:120]}")
+        if ok:
+            deleted += 1
+        else:
+            failed += 1
+    print(f"\n=== メディア削除サマリ ===\n  削除: {deleted} 件 / 失敗: {failed} 件")
+
+
+def main() -> int:
+    args = parse_args()
+    # dry-run では WordPress を変更しないのと同様、遮断の目印ファイルも作らない
+    # （ワークフローの再実行は実投稿が遮断されたときだけ行う）。
+    set_dry_run(args.dry_run)
+    limit = None if args.limit is None or args.limit <= 0 else args.limit
+
+    input_path = Path(args.input)
+    articles_dir = Path(args.articles_dir)
+    images_dir = Path(args.images_dir)
+
+    df = read_table(input_path, args.sheet)
+    cols = df.columns.tolist()
+    col = {key: find_col(cols, cands) for key, cands in COLUMN_CANDIDATES.items()}
+
+    print("=== 列マッピング結果 ===")
+    for key, name in col.items():
+        print(f"  {key:10s} -> {name}")
+    run_label = "CHECK-IMAGES-ONLY" if args.check_images_only else ("DRY-RUN" if args.dry_run else "POST")
+    print(f"  対象行数: {len(df)}  / モード: {run_label}  / status: {args.post_status}")
+
+    if not args.check_images_only and col["kw"] is None and col["title"] is None:
+        raise RuntimeError("KW 列・タイトル列のどちらも見つかりません。管理表の列名を確認してください。")
+
+    # --allow-duplicate は後方互換のため upsert 相当として扱う（write_mode 既定時のみ）
+    write_mode = args.write_mode
+    if args.allow_duplicate and write_mode == "create_only":
+        write_mode = "upsert"
+        print("  [注意] --allow-duplicate は非推奨です。--write-mode upsert として扱います。")
+    if not args.check_images_only:
+        print(f"  書き込みモード: {write_mode}")
+    if args.skip_existing_check and write_mode != "create_only":
+        raise RuntimeError(
+            "--skip-existing-check は --write-mode create_only と併用してください。"
+        )
+    if (
+        args.skip_existing_check
+        and not args.dry_run
+        and args.post_status != "draft"
+    ):
+        raise RuntimeError(
+            "--skip-existing-check は公開・保留投稿では使えません。"
+            "WordPress上の既存投稿を確認できない場合は、重複防止のため停止します。"
+        )
+
+    # アイキャッチが使えないときの代替画像。サイトのメディアライブラリに
+    # すでにある画像をIDで指すだけで、ファイルの再アップロードはしない。
+    raw_fallback = safe_str(args.fallback_media_id) or os.environ.get("WP_FALLBACK_MEDIA_ID", "")
+    raw_fallback = raw_fallback.strip()
+    if raw_fallback and not raw_fallback.isdigit():
+        raise RuntimeError(
+            f"代替アイキャッチのメディアIDが数字ではありません: {raw_fallback}"
+        )
+    fallback_media_id = int(raw_fallback or 0)
+    if fallback_media_id:
+        print(f"  代替アイキャッチ: media id={fallback_media_id}（画像が壊れている記事に使用）")
+
+    wp: WordPressClient | None = None
+    if args.check_images_only:
+        print("  画像チェックのみ実行します（WordPress 投稿は行いません）。")
+    elif not args.dry_run:
+        # 投稿モードでは認証必須
+        wp = WordPressClient(
+            env_required("WP_BASE_URL"),
+            env_required("WP_USERNAME"),
+            env_required("WP_APP_PASSWORD"),
+        )
+        if args.skip_auth_check:
+            print("  投稿前の認証確認を省略します（投稿APIで判定）")
+        else:
+            try:
+                user = wp.verify_auth()
+                print(f"  認証OK: {user} としてログイン")
+            except Exception as exc:
+                raise RuntimeError(
+                    f"WordPress 認証に失敗しました。WP_BASE_URL / WP_USERNAME / WP_APP_PASSWORD を確認してください: {exc}"
+                )
+    else:
+        # dry-run では認証情報があれば既存有無の判定に使う（無ければ判定不可として続行）
+        if all(os.environ.get(k, "").strip() for k in ("WP_BASE_URL", "WP_USERNAME", "WP_APP_PASSWORD")):
+            try:
+                wp = WordPressClient(
+                    os.environ["WP_BASE_URL"], os.environ["WP_USERNAME"], os.environ["WP_APP_PASSWORD"]
+                )
+                user = wp.verify_auth()
+                print(f"  認証OK（dry-run/既存判定用）: {user}")
+            except Exception as exc:
+                wp = None
+                print(f"  [注意] dry-run の既存判定をスキップします（認証不可: {exc}）")
+        else:
+            print("  [注意] 認証情報が無いため dry-run では既存有無を判定しません。")
+
+    # 自サイトのホスト名。参考情報の中の内部リンクを出典から除くために使う。
+    site_host = os.environ.get("WP_BASE_URL", "").strip()
+
+    no_filter = parse_no_spec(args.nos)
+    if no_filter is not None:
+        rng = ",".join(str(n) for n in sorted(no_filter))
+        print(f"  対象No指定: {rng}")
+
+    # ---- 保守モード：サイト上の管理対象投稿の一覧／完全削除 -----------------
+    if args.list_managed or args.delete_managed:
+        if wp is None:
+            raise RuntimeError("--list-managed / --delete-managed には WordPress 認証情報が必要です。")
+        run_managed_maintenance(
+            wp, df, col, no_filter,
+            delete=args.delete_managed, assume_yes=args.yes,
+        )
+        return 0
+
+    # ---- 保守モード：重複アイキャッチ画像の整理 -----------------------------
+    if args.cleanup_media:
+        if wp is None:
+            raise RuntimeError("--cleanup-media には WordPress 認証情報が必要です。")
+        run_media_cleanup(wp, df, col, assume_yes=args.yes)
+        return 0
+
+    # 内部リンク解決用の No -> URL マップを先に作る（まずは /slug/ を仮置き）
+    no_to_url: dict[int, str] = {}
+    for _i, _row in df.iterrows():
+        _no = no_to_int(safe_str(_row.get(col["no"])) if col["no"] else "")
+        if _no is None:
+            continue
+        _title = safe_str(_row.get(col["title"])) if col["title"] else ""
+        _eslug = safe_str(_row.get(col["slug"])) if col["slug"] else ""
+        _slug = make_slug(_eslug or _title, f"post-{int(_i) + 1:03d}")
+        if _slug:
+            no_to_url[_no] = f"/{_slug}/"
+
+    # 公開済み記事は WordPress から実際のパーマリンクを取得して置き換える。
+    # サイトのパーマリンク設定（日付入り等）が何であっても正しいURLになる。
+    # 未投稿の記事は /slug/ のまま残り、次回の upsert 実行で実URLに更新される。
+    if wp is not None and not args.skip_internal_link_resolution:
+        resolved = 0
+        for _no, _path in list(no_to_url.items()):
+            _post = wp.find_post_by_slug(_path.strip("/"), args.post_status)
+            _link = safe_str((_post or {}).get("link"))
+            if _link:
+                no_to_url[_no] = _link
+                resolved += 1
+        print(f"  内部リンク先の実URL解決: {resolved}/{len(no_to_url)} 件"
+              + ("" if resolved == len(no_to_url) else "（未投稿分は投稿後の再実行で解決されます）"))
+    elif wp is not None:
+        print("  内部リンク先の実URL解決: 省略（アクセス削減モード）")
+
+    # スラッグ重複の検出（create_only で後勝ちの取りこぼしを防ぐための警告）
+    dup_slugs = detect_duplicate_slugs(df, col)
+    if dup_slugs:
+        print("  [警告] 管理表にスラッグの重複があります。create_only では後から処理する記事がスキップされます。")
+        for slug, nos in dup_slugs.items():
+            print(f"    スラッグ重複: {slug} (No.{', No.'.join(nos)})")
+        print("    → 重複したスラッグを一意に変更してください。")
+
+    results: list[dict[str, Any]] = []
+    processed = 0
+
+    for idx, row in df.iterrows():
+        if limit is not None and processed >= limit:
+            break
+
+        no_value = safe_str(row.get(col["no"])) if col["no"] else str(idx + 1)
+        if not no_value:
+            no_value = str(idx + 1)
+
+        # --nos 指定時は対象 No 以外をスキップ
+        if no_filter is not None:
+            n_int = no_to_int(no_value)
+            if n_int is None or n_int not in no_filter:
+                continue
+        kw = safe_str(row.get(col["kw"])) if col["kw"] else ""
+        title = safe_str(row.get(col["title"])) if col["title"] else ""
+        if not title:
+            title = kw
+        if not title and not args.check_images_only:
+            continue  # 投稿系: タイトルも KW も無い行はスキップ（空行対策）
+
+        explicit_slug = safe_str(row.get(col["slug"])) if col["slug"] else ""
+        slug = make_slug(explicit_slug or title, f"post-{int(idx) + 1:03d}")
+        excerpt = safe_str(row.get(col["meta"])) if col["meta"] else ""
+        # メタ説明もフォーカスKWの表記に寄せる（Rank Mathのメタ判定対策）
+        excerpt = seed_focus_keyword(excerpt, kw, align_focus_keyword(kw, title))
+        if args.category.strip():
+            # --category 指定時は全記事のカテゴリをこの値に統一（Excelの列を無視）
+            category_names = split_terms(args.category)
+        else:
+            category_names = split_terms(safe_str(row.get(col["category"])) if col["category"] else "")
+        tag_names = split_terms(safe_str(row.get(col["tag"])) if col["tag"] else "")
+        image_name = safe_str(row.get(col["image_name"])) if col["image_name"] else ""
+        alt_text = safe_str(row.get(col["alt"])) if col["alt"] else ""
+        if not alt_text:
+            alt_text = f"{title}のアイキャッチ画像"
+
+        article_path = find_article_file(articles_dir, explicit_slug, no_value)
+        image_path = find_image_file(images_dir, explicit_slug, no_value, image_name)
+
+        # アイキャッチ画像チェック（dry-run / post / check-images-only 共通でログ出力）
+        img_chk = check_eyecatch(image_path, no_value, images_dir)
+        print(img_chk["log"])
+
+        run_mode = "check-images-only" if args.check_images_only \
+            else f"{'dry-run' if args.dry_run else 'post'}/{write_mode}"
+        result: dict[str, Any] = {
+            "no": no_value,
+            "kw": kw,
+            "title": title,
+            "slug": slug,
+            "article_file": str(article_path) if article_path else "",
+            "image_file": str(image_path) if image_path else "（画像なし）",
+            "status": "",
+            "post_id": "",
+            "post_link": "",
+            "posted_at": "",
+            "updated_at": "",
+            "run_mode": run_mode,
+            "char_count": "",
+            "char_judge": "",
+            "image_status": img_chk["image_status"],
+            "image_error": img_chk["error_content"],
+            "error_content": "",
+            "message": "",
+        }
+
+        # 画像チェックのみモード: 投稿処理を行わず結果を記録して次へ
+        if args.check_images_only:
+            result["status"] = "image-check"
+            result["updated_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            result["message"] = img_chk["log"]
+            results.append(result)
+            processed += 1
+            continue
+
+        # 画像を読み込めない場合は、WordPressへのアクセス自体を行わずエラーにする。
+        # 拡張子だけがPNGでも実体が破損していると、メディア登録やサムネイル生成で
+        # サーバー側の分かりにくいエラーになるため、投稿結果で明示的に失敗させる。
+        # WARN（PNG以外・比率違い）は従来どおり投稿を続ける。
+        use_fallback_media = False
+        if img_chk["level"] == "NG":
+            if fallback_media_id:
+                # 画像が壊れている・見つからない場合でも記事自体は落とさず、
+                # 既定のアイキャッチで投稿する。壊れたPNGを送るとサムネイル生成で
+                # サーバー側が500を返すため、ファイルは送らずメディアIDだけを使う。
+                use_fallback_media = True
+                image_path = None
+                result["image_status"] = "代替画像"
+                result["image_error"] = img_chk["error_content"]
+                result["image_file"] = f"（代替アイキャッチ media id={fallback_media_id}）"
+                print(f"  [代替] {img_chk['error_content']} -> media id={fallback_media_id} を使用します")
+            else:
+                result["status"] = "error"
+                result["message"] = img_chk["error_content"]
+                result["error_content"] = img_chk["error_content"]
+                results.append(result)
+                processed += 1
+                print(f"[ERROR] No.{no_value} {title} -> {img_chk['error_content']}")
+                continue
+
+        if article_path is None:
+            result["status"] = "skipped"
+            result["message"] = "本文 Markdown が見つかりません。"
+            results.append(result)
+            print(f"[SKIP] No.{no_value} {title} -> 本文なし")
+            continue
+
+        md_text = article_path.read_text(encoding="utf-8")
+        # GEO Kit 用メタ（結論・関連CVE・FAQ・出典）を記事から組み立てる。
+        # フロントマターがあればそれを優先し、無い項目は本文から抽出する。
+        # 組み立てに失敗しても投稿自体は止めない（メタなしで続行する）。
+        try:
+            cng_meta = geo_kit.build_geo_meta(
+                md_text, cve_hint=kw, slug=slug, site_host=site_host
+            )
+        except Exception as exc:
+            cng_meta = {}
+            print(f"  [警告] GEO情報の組み立てに失敗しました: {exc}")
+        # フロントマターは本文に出さない（区切り線として描画されるのを防ぐ）
+        front_matter, md_text = geo_kit.parse_front_matter(md_text)
+        # CyberNote短編ニュースではFAQと出典をGEO Kitが表示する。品質ゲートを
+        # 経由しない手動投稿でも二重表示させないため、この領域に限って本文側の
+        # 同義セクションを投稿直前に除去する（一般記事には適用しない）。
+        if "cybernote-security-news" in article_path.parts:
+            md_text, removed_sections = geo_kit.strip_plugin_generated_sections(md_text)
+            if removed_sections:
+                print(
+                    "  [補正] GEO Kitと重複する本文見出しを除去しました: "
+                    + ", ".join(f"## {title}" for title in removed_sections)
+                )
+        # FAQの改行・内部リンクのブログカード化・KW表記整合などの補正を適用する
+        md_text = enhance_article_markdown(
+            md_text, no_to_url, kw, align_focus_keyword(kw, title)
+        )
+        content_html = markdown_to_html(md_text, strip_h1=not args.keep_h1, title=title)
+        if image_path:
+            img_note = "画像あり"
+        elif use_fallback_media:
+            img_note = f"代替画像 media id={fallback_media_id}"
+        else:
+            img_note = "画像なし"
+
+        # 文字数実績と判定（本文があれば dry-run でも算出）
+        char_target = safe_str(row.get(col["char_target"])) if col["char_target"] else ""
+        result["char_count"] = count_text_chars(content_html)
+        result["char_judge"] = judge_char_count(result["char_count"], char_target)
+
+        # ---- 既存投稿の有無と write_mode から動作を決定 ----------------------
+        # Imunify360等がREST APIのGETを自動化アクセスとして遮断する環境向けに、
+        # create_only時だけ既存投稿確認を省略できる。管理簿の投稿ステータスを
+        # 再処理防止の一次情報として扱い、更新・upsertでは従来どおり確認する。
+        existing = None
+        if wp and not args.skip_existing_check:
+            existing = wp.find_post_by_slug(slug, args.post_status)
+            # slug が空になりがちな下書き等はタイトル完全一致でフォールバック検索する
+            if not existing and not args.slug_only_existing_check:
+                existing = wp.find_post_by_title(title, args.post_status)
+            # slug/title が変わっていても、同じCVEの別URLがあれば新規作成しない。
+            # 「続報」は同一CVEの独立記事を意図しているため、slug/titleの冪等性のみ適用する。
+            is_followup = "続報" in title or "followup" in slug.lower()
+            # まとめ記事は、個別記事があるCVEを複数まとめて扱うのが役目なので、
+            # CVEが一致する投稿があるのは正常。ここで止めると月例更新のまとめを
+            # 一切出せなくなる。フロントマターに roundup: true と書いて宣言する。
+            #
+            # 逆向き（個別記事を出すときに既存のまとめ記事と衝突する）は、
+            # _post_search_text() が本文を検索対象から外しているため起きない。
+            # まとめ記事の本文にCVEが並んでいても、slug/title/excerpt に無ければ
+            # 個別記事の重複とは判定されない。
+            is_roundup = is_truthy(front_matter.get("roundup"))
+            if is_roundup:
+                print("    まとめ記事のため、同一CVEによる重複判定を行いません（roundup: true）")
+            if not existing and not is_followup and not is_roundup:
+                cve_values = [
+                    # A declared cve: (including blank) is authoritative.
+                    safe_str(front_matter.get("cve")) if "cve" in front_matter
+                    else safe_str(cng_meta.get("_cng_cve")),
+                    kw,
+                    title,
+                    slug,
+                ]
+                cve_matches = wp.find_posts_by_cves(cve_values)
+                if len(cve_matches) > 1:
+                    ids = ", ".join(
+                        str(int(post.get("id") or 0)) for post in cve_matches
+                    )
+                    raise RuntimeError(
+                        "同一CVEの投稿がWordPress上に複数あります"
+                        f"（IDs: {ids}）。正規URLを決めるまで自動投稿を停止します。"
+                    )
+                if cve_matches:
+                    existing = cve_matches[0]
+                    existing_slug = safe_str(existing.get("slug"))
+                    if existing_slug:
+                        print(
+                            f"    同一CVEの既存投稿 id={existing.get('id')} を検出。"
+                            f"正規URLを維持するため slug='{existing_slug}' を使います。"
+                        )
+                        slug = existing_slug
+        elif wp and args.skip_existing_check:
+            print("    既存投稿確認を省略します（create_only / 管理簿で重複管理）")
+        existence_known = wp is not None
+        if not existence_known:
+            existence_note = "既存不明(認証なし)"
+        else:
+            existence_note = "既存あり" if existing else "既存なし"
+
+        if write_mode == "create_only":
+            action = "skip" if existing else "create"
+        elif write_mode == "update_only":
+            action = "update" if existing else "skip"
+        else:  # upsert
+            action = "update" if existing else "create"
+        post_id_to_update = int(existing["id"]) if (existing and action == "update") else None
+
+        action_label = {"create": "新規作成予定", "update": "更新予定", "skip": "スキップ予定"}[action]
+
+        if existing:
+            result["post_id"] = existing.get("id", "")
+            result["post_link"] = existing.get("link", "")
+
+        # ---- dry-run：判定結果のみ表示して次へ ------------------------------
+        if args.dry_run:
+            result["status"] = "dry-run"
+            cat = "/".join(category_names) or "-"
+            tag = "/".join(tag_names) or "-"
+            result["message"] = f"{write_mode}: {existence_note} → {action_label}（{img_note} / cat:{cat} / tag:{tag}）"
+            results.append(result)
+            processed += 1
+            print(f"[DRY-RUN] No.{no_value} {title} -> {result['message']}")
+            print(f"  GEO: {geo_kit.describe_geo_meta(cng_meta)}")
+            continue
+
+        # ---- 実投稿 ---------------------------------------------------------
+        try:
+            assert wp is not None
+
+            if action == "skip":
+                result["status"] = "skipped"
+                if write_mode == "create_only":
+                    result["message"] = "同一 slug の投稿が既に存在するためスキップ（更新するには write_mode=update_only/upsert）"
+                else:  # update_only かつ既存なし
+                    result["message"] = "更新対象の既存投稿が見つからないためスキップ"
+                results.append(result)
+                processed += 1
+                print(f"[SKIP] No.{no_value} {title} -> {result['message']}")
+                continue
+
+            # 「親 > 子」形式を親子カテゴリとして作成し、末端IDを付与する
+            category_ids = [
+                i for i in (
+                    wp.find_or_create_category_path(
+                        n, skip_search=args.skip_existing_check
+                    )
+                    for n in category_names
+                )
+                if i
+            ]
+            tag_ids = [
+                i for i in (
+                    wp.find_or_create_term(
+                        "tag", n, skip_search=args.skip_existing_check
+                    )
+                    for n in tag_names
+                )
+                if i
+            ]
+
+            # 本文を Gutenberg ブロックへ変換（「ブロックを解除」警告の回避）
+            body_html = content_html if args.no_gutenberg_blocks \
+                else html_to_gutenberg_blocks(content_html)
+            # 内部リンクのプレースホルダを Cocoon ブログカードブロックへ差し替える
+            body_html = inject_blogcards(body_html, wp.base_url)
+
+            # 画像がある場合のみ featured_media を設定する。
+            # 更新時は既存のアイキャッチを再利用し、毎回の再アップロードで
+            # メディアライブラリが増殖するのを防ぐ（--force-image-upload で再アップロード）。
+            featured_media: int | None = None
+            media_url = ""
+            post_content = body_html
+            if image_path:
+                if post_id_to_update and existing and not args.force_image_upload:
+                    existing_fm = int(existing.get("featured_media") or 0)
+                    if existing_fm:
+                        reuse_url = wp.get_media_source_url(existing_fm)
+                        if reuse_url:
+                            featured_media = existing_fm
+                            media_url = reuse_url
+                            print(f"  アイキャッチ再利用: media id={existing_fm}")
+                if featured_media is None:
+                    featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
+                # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
+                if not args.no_inline_eyecatch and media_url:
+                    post_content = build_image_block(media_url, alt_text) + body_html
+            elif use_fallback_media:
+                # 既存メディアを指すだけなのでアップロードは発生しない。
+                # IDが実在しないまま featured_media に入れると、投稿はできるのに
+                # アイキャッチが空という分かりにくい状態になるため先に確認する。
+                media_url = wp.get_media_source_url(fallback_media_id)
+                if not media_url:
+                    raise RuntimeError(
+                        f"代替アイキャッチ media id={fallback_media_id} をサイト上で確認できません。"
+                        "--fallback-media-id の値を見直してください"
+                    )
+                featured_media = fallback_media_id
+                if not args.no_inline_eyecatch:
+                    post_content = build_image_block(media_url, alt_text) + body_html
+
+            # フォーカスKWは本文表記に寄せ、SEOタイトル/説明も Rank Math に設定する
+            focus_keyword = safe_str(front_matter.get("rank_math_focus_keyword")) or align_focus_keyword(kw, title)
+            seo_title = safe_str(front_matter.get("rank_math_title")) or build_seo_title(title)
+            seo_description = safe_str(front_matter.get("rank_math_description")) or excerpt
+            created = wp.create_post(
+                title=title,
+                content_html=post_content,
+                slug=slug,
+                excerpt=excerpt,
+                status=args.post_status,
+                category_ids=category_ids,
+                tag_ids=tag_ids,
+                featured_media=featured_media,
+                post_id=post_id_to_update,
+                focus_keyword=focus_keyword,
+                seo_title=seo_title,
+                seo_description=seo_description,
+                geo_meta=cng_meta,
+            )
+            returned_slug = safe_str(created.get("slug"))
+            if returned_slug and returned_slug != slug:
+                print(
+                    f"  [警告] スラッグが '{returned_slug}' になりました（希望: '{slug}'）。"
+                    f"同じスラッグの投稿がサイトに残っています（ゴミ箱含む）。"
+                    f"MODE=list で重複を確認してください"
+                )
+            if focus_keyword:
+                # 投稿レスポンスの meta から実際に保存された値を確認する。
+                # show_in_rest 登録済みなら保存値が返る。空なら未保存＝サイト側未対応。
+                saved_kw = (created.get("meta") or {}).get("rank_math_focus_keyword", "")
+                if saved_kw:
+                    print(f"  focus_keyword OK（保存確認）: {saved_kw}")
+                else:
+                    print(f"  focus_keyword 送信済みだが未保存: '{focus_keyword}' "
+                          f"→ サイト側でRank MathメタがREST未公開の可能性")
+
+            if cng_meta:
+                # GEOメタも投稿レスポンスの meta から保存結果を確認する。
+                # 未保存なら mu-plugin 未設置、壊れていればスラッシュの
+                # 二重付与などで表示側の json_decode() が失敗する状態。
+                print(f"  GEO: {geo_kit.describe_geo_meta(cng_meta)}")
+                missing, broken = geo_kit.check_geo_meta(cng_meta, created.get("meta") or {})
+                if missing:
+                    print(f"  [警告] GEOメタが未保存です: {', '.join(missing)} "
+                          f"→ wp-content/mu-plugins/cng-geo-rest.php の設置を確認してください")
+                if broken:
+                    print(f"  [警告] GEOメタの保存値が壊れています: {', '.join(broken)} "
+                          f"→ cng-geo-rest.php の sanitize_callback を確認してください")
+                if not missing and not broken:
+                    print("  GEOメタ保存OK（結論・CVE・FAQ・出典）")
+
+            now_str = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            result["post_id"] = created.get("id", "")
+            result["post_link"] = created.get("link", "")
+            note = "（画像なし）" if not image_path else ""
+            if post_id_to_update:
+                result["status"] = "updated"
+                result["updated_at"] = now_str
+                result["message"] = f"既存投稿を更新しました {note}".strip()
+                print(f"[UPDATED] No.{no_value} {title} -> {result['post_link']} {note}")
+            else:
+                result["status"] = "posted"
+                result["posted_at"] = now_str
+                result["message"] = f"新規投稿しました {note}".strip()
+                print(f"[POSTED] No.{no_value} {title} -> {result['post_link']} {note}")
+
+        except WordPressBlockedError as exc:
+            # サーバー側に遮断された状態。次の記事へ進んでも必ず失敗するうえ、
+            # 連打はボット判定を強めるだけなので、この実行はここで打ち切る。
+            result["status"] = "error"
+            result["message"] = str(exc)
+            print(f"[ERROR] No.{no_value} {title} -> {exc}")
+            print("[ERROR] サーバー側の遮断を検知したため、残りの記事は処理しません")
+            results.append(result)
+            processed += 1
+            break
+        except Exception as exc:
+            result["status"] = "error"
+            result["message"] = str(exc)
+            print(f"[ERROR] No.{no_value} {title} -> {exc}")
+
+        results.append(result)
+        processed += 1
+        if args.sleep > 0:
+            time.sleep(args.sleep)
+
+    # エラー内容を確定（投稿エラー/スキップ理由を優先、無ければ画像チェックの問題）
+    for r in results:
+        post_msg = r.get("message", "") if r.get("status") in ("error", "skipped") else ""
+        r["error_content"] = post_msg or r.get("image_error", "")
+
+    # 結果 CSV
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    result_path = output_dir / f"results_{timestamp}.csv"
+    pd.DataFrame(
+        results,
+        columns=[
+            "no", "kw", "title", "slug", "article_file", "image_file",
+            "status", "post_id", "post_link", "posted_at", "updated_at",
+            "run_mode", "char_count", "char_judge", "image_status",
+            "error_content", "message",
+        ],
+    ).to_csv(result_path, index=False, encoding="utf-8-sig")
+
+    # Excel への書き戻し（--update-excel 指定時のみ）
+    if args.update_excel:
+        try:
+            only = IMAGE_ONLY_KEYS if args.check_images_only else None
+            updated = update_excel_results(input_path, args.sheet, results, only_keys=only)
+            scope = "画像チェック結果" if args.check_images_only else "投稿結果"
+            print(f"Excel 更新: {input_path}（{updated} 行に{scope}を書き込み）")
+        except Exception as exc:
+            print(f"[WARN] Excel 更新に失敗しました（CSV は出力済み）: {exc}")
+
+    # サマリ
+    summary: dict[str, int] = {}
+    for r in results:
+        summary[r["status"]] = summary.get(r["status"], 0) + 1
+    print("=== 実行サマリ ===")
+    for status, count in sorted(summary.items()):
+        print(f"  {status}: {count}")
+    print(f"結果CSV: {result_path}")
+
+    # error があっても全体は完了扱い（CSV で追跡）。ただし戻り値で検知できるようにする。
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
