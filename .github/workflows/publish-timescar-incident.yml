@@ -1,0 +1,232 @@
+name: Publish Times Car Incident
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-timescar-incident.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  SLUG: timescar-unauthorized-access-data-leak-2026
+  TARGET_NO: '141'
+  STATUS_FILE: .github/timescar-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark workflow started
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=started\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\nstarted_utc=%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Mark Times Car publication workflow start"
+          git push origin HEAD:main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies and Japanese font
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          mkdir -p "$RESULTS_DIR" "$IMAGES_DIR"
+
+      - name: Generate editorial eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          W, H = 1200, 800
+          BG = '#0B1F33'
+          PANEL = '#102A43'
+          WHITE = '#F7FAFC'
+          MUTED = '#B7C7D6'
+          CYAN = '#22D3EE'
+          GREEN = '#34D399'
+          RED = '#F43F5E'
+          GRID = '#173550'
+
+          regular = '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          bold = '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+
+          def font(path, size):
+              return ImageFont.truetype(path, size, index=0)
+
+          f_small = font(regular, 24)
+          f_body = font(regular, 30)
+          f_label = font(bold, 34)
+          f_head = font(bold, 56)
+          f_big = font(bold, 74)
+
+          image = Image.new('RGB', (W, H), BG)
+          draw = ImageDraw.Draw(image)
+
+          for x in range(80, 1160, 120):
+              draw.line((x, 80, x, 720), fill=GRID, width=1)
+          for y in range(80, 760, 120):
+              draw.line((60, y, 1140, y), fill=GRID, width=1)
+
+          draw.text((72, 58), 'CYBERNOTE  |  SECURITY NEWS  |  2026.09.28', font=f_small, fill=CYAN)
+          draw.text((72, 145), 'タイムズカー', font=f_head, fill=WHITE)
+          draw.text((72, 222), '不正アクセス', font=f_big, fill=WHITE)
+          draw.rounded_rectangle((74, 334, 584, 416), radius=14, fill=PANEL, outline='#284760', width=2)
+          draw.text((102, 350), '約660万件の会員情報', font=f_label, fill=RED)
+          draw.text((76, 465), '運転免許証画像なども対象', font=f_label, fill=WHITE)
+          draw.text((76, 520), 'クレジットカード情報の漏えいは確認されず', font=f_body, fill=MUTED)
+
+          # right-side document / identity-card motif
+          draw.rounded_rectangle((745, 150, 1115, 610), radius=28, fill=PANEL, outline='#31526A', width=3)
+          draw.rounded_rectangle((790, 205, 1070, 365), radius=18, outline=CYAN, width=4)
+          draw.ellipse((820, 235, 900, 315), outline=WHITE, width=4)
+          draw.line((930, 245, 1030, 245), fill=MUTED, width=5)
+          draw.line((930, 285, 1015, 285), fill=MUTED, width=5)
+          draw.line((820, 410, 1035, 410), fill=MUTED, width=5)
+          draw.line((820, 455, 1000, 455), fill=MUTED, width=5)
+          draw.line((820, 500, 1045, 500), fill=MUTED, width=5)
+          draw.line((700, 400, 755, 400), fill=RED, width=7)
+          draw.polygon([(690, 400), (718, 382), (718, 418)], fill=RED)
+          draw.text((768, 645), 'PERSONAL DATA', font=f_small, fill=GREEN)
+
+          draw.line((72, 700, 1128, 700), fill='#284760', width=2)
+          draw.text((72, 718), '一次情報：パーク24  第2報', font=f_small, fill='#7890A6')
+
+          out = Path('projects/cybernote-security-news/eyecatches/timescar-unauthorized-access-data-leak-2026.png')
+          image.save(out, format='PNG', optimize=True)
+          with Image.open(out) as check:
+              check.load()
+              assert check.format == 'PNG' and check.size == (1200, 800) and check.mode == 'RGB'
+          print(f'generated={out} bytes={out.stat().st_size}')
+          PY
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --results "$RESULTS_DIR/article_quality_results.csv"             --nos "$TARGET_NO"             --include-unstarted             --mode geo             --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --images-dir "$IMAGES_DIR"             --post-status publish             --write-mode upsert             --category "サイバーセキュリティ"             --nos "$TARGET_NO"             --limit 1             --skip-auth-check             --skip-internal-link-resolution             --fallback-media-id "$FALLBACK_MEDIA_ID"             --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          from pathlib import Path
+
+          target = os.environ['TARGET_NO']
+          result_files = sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          if not result_files:
+              raise SystemExit('WordPress result CSV was not created')
+          with result_files[-1].open(encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          matches = [r for r in rows if str(r.get('no','')).strip() == target]
+          if not matches:
+              raise SystemExit(f'No.{target} result is missing')
+          result = matches[-1]
+          status = (result.get('status') or '').strip().lower()
+          if status not in {'posted','updated'}:
+              raise SystemExit(f"Publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
+          post_id = result.get('post_id','')
+          post_link = result.get('post_link','')
+          if not post_id or not post_link:
+              raise SystemExit('WordPress post ID or link is missing')
+
+          ledger = Path(os.environ['LEDGER'])
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              ledger_rows = list(reader)
+          row = next((r for r in ledger_rows if str(r.get('No','')).strip() == target), None)
+          if row is None:
+              raise SystemExit(f'No.{target} not found in ledger')
+          row['投稿ステータス'] = '公開済み'
+          row['WP投稿ID'] = post_id
+          row['WP投稿URL'] = post_link
+          row['最終更新日時'] = result.get('posted_at') or result.get('updated_at') or dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+          row['エラー内容'] = ''
+          with ledger.open('w', encoding='utf-8-sig', newline='') as f:
+              writer = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+
+          status_file = Path(os.environ['STATUS_FILE'])
+          status_file.write_text(
+              'state=published\n'
+              + f'post_id={post_id}\n'
+              + f'post_url={post_link}\n'
+              + f'run_url=https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}\n',
+              encoding='utf-8'
+          )
+          print('PUBLISHED:', post_link)
+          PY
+
+      - name: Commit publication result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER" "$IMAGES_DIR/$SLUG.png" "$STATUS_FILE"
+          git commit -m "Record published Times Car incident"
+          pushed=0
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=1
+              break
+            fi
+            git pull --rebase origin main
+            sleep $(( attempt * 5 ))
+          done
+          test "$pushed" -eq 1
+
+      - name: Record failure status
+        if: failure()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=failed\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Record failed Times Car publication" || true
+          git pull --rebase origin main || true
+          git push origin HEAD:main || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: timescar-publication-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
