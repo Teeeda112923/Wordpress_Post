@@ -91,12 +91,12 @@ jobs:
           for y in range(80, 760, 120):
               draw.line((60, y, 1140, y), fill=GRID, width=1)
 
-          draw.text((72, 58), 'CYBERNOTE  |  SECURITY NEWS  |  2026.09.28', font=f_small, fill=CYAN)
+          draw.text((72, 58), 'CYBERNOTE  |  SECURITY NEWS  |  2026.09.29', font=f_small, fill=CYAN)
           draw.text((72, 145), 'タイムズカー', font=f_head, fill=WHITE)
           draw.text((72, 222), '不正アクセス', font=f_big, fill=WHITE)
           draw.rounded_rectangle((74, 334, 584, 416), radius=14, fill=PANEL, outline='#284760', width=2)
           draw.text((102, 350), '約660万件の会員情報', font=f_label, fill=RED)
-          draw.text((76, 465), '運転免許証画像なども対象', font=f_label, fill=WHITE)
+          draw.text((76, 465), '本人確認書類 約160万件', font=f_label, fill=WHITE)
           draw.text((76, 520), 'クレジットカード情報の漏えいは確認されず', font=f_body, fill=MUTED)
 
           # right-side document / identity-card motif
@@ -113,7 +113,7 @@ jobs:
           draw.text((768, 645), 'PERSONAL DATA', font=f_small, fill=GREEN)
 
           draw.line((72, 700, 1128, 700), fill='#284760', width=2)
-          draw.text((72, 718), '一次情報：パーク24  第2報', font=f_small, fill='#7890A6')
+          draw.text((72, 718), 'UPDATE  2026.09.29', font=f_small, fill='#7890A6')
 
           out = Path('projects/cybernote-security-news/eyecatches/timescar-unauthorized-access-data-leak-2026.png')
           image.save(out, format='PNG', optimize=True)
