@@ -176,6 +176,15 @@ jobs:
             echo "選択したNo: $NEWS_NO"
           fi
 
+      - name: Eyecatch identity gate
+        if: steps.select.outputs.selected_no != ''
+        run: |
+          python verify_eyecatch_identity.py \
+            --ledger "$LEDGER" \
+            --images-dir "$IMAGES_DIR" \
+            --nos "${{ steps.select.outputs.selected_no }}" \
+            --require-since 2026-10-01
+
       - name: Article quality gate
         if: steps.select.outputs.selected_no != ''
         run: |
