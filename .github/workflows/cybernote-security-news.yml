@@ -183,7 +183,7 @@ jobs:
             --ledger "$LEDGER" \
             --images-dir "$IMAGES_DIR" \
             --nos "${{ steps.select.outputs.selected_no }}" \
-            --require-since 2026-10-01
+            --require-from-no 147
 
       - name: Article quality gate
         if: steps.select.outputs.selected_no != ''
