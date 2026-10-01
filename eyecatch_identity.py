@@ -17,6 +17,7 @@ from PIL import Image, ImageOps
 IDENTITY_SUFFIX = ".identity.json"
 DEFAULT_HASH_SIZE = 16
 DEFAULT_DISTANCE_LIMIT = 18
+MEDIA_SHA_PREFIX = "cybernote-sha256:"
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -64,6 +65,19 @@ def hash_distance(left: str, right: str) -> int:
 
 def visually_same(left: str, right: str, limit: int = DEFAULT_DISTANCE_LIMIT) -> bool:
     return hash_distance(left, right) <= limit
+
+
+def media_sha_marker(sha256: str) -> str:
+    return f"{MEDIA_SHA_PREFIX}{sha256}"
+
+
+def extract_media_sha(value: str) -> str:
+    text = value or ""
+    marker = text.lower().find(MEDIA_SHA_PREFIX)
+    if marker < 0:
+        return ""
+    candidate = text[marker + len(MEDIA_SHA_PREFIX): marker + len(MEDIA_SHA_PREFIX) + 64]
+    return candidate if len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate) else ""
 
 
 def manifest_path(image_path: Path) -> Path:
