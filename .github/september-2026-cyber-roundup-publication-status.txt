@@ -1,3 +1,7 @@
-state=failed
-run_id=36802020512
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/36802020512
+state=published
+post_id=8402
+post_url=https://www.cybernote.click/2026/10/01/september-2026-cyber-incidents-roundup/
+featured_media=7203
+geo_faq=3
+geo_sources=9
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/36802132211
