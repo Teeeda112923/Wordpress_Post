@@ -1,0 +1,49 @@
+name: CyberNote Regression
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wp_auto_post.py"
+      - "eyecatch_identity.py"
+      - "prepare_eyecatch.py"
+      - "verify_eyecatch_identity.py"
+      - "audit_wp_eyecatches.py"
+      - "geo_meta.py"
+      - "article_quality_check.py"
+      - "geo_article_quality_check.py"
+      - "projects/cybernote-security-news/tests/**"
+      - ".github/workflows/cybernote-regression.yml"
+  pull_request:
+    paths:
+      - "wp_auto_post.py"
+      - "eyecatch_identity.py"
+      - "prepare_eyecatch.py"
+      - "verify_eyecatch_identity.py"
+      - "audit_wp_eyecatches.py"
+      - "geo_meta.py"
+      - "article_quality_check.py"
+      - "geo_article_quality_check.py"
+      - "projects/cybernote-security-news/tests/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Compile posting scripts
+        run: |
+          python -m py_compile             wp_auto_post.py             eyecatch_identity.py             prepare_eyecatch.py             verify_eyecatch_identity.py             audit_wp_eyecatches.py
+      - name: Run regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
