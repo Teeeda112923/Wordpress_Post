@@ -218,6 +218,15 @@ jobs:
               handle.write(f"count={len(targets)}\n")
           PY
 
+      - name: Eyecatch identity gates
+        if: steps.targets.outputs.nos != ''
+        run: |
+          python verify_eyecatch_identity.py \
+            --ledger "$LEDGER" \
+            --images-dir "$IMAGES_DIR" \
+            --nos "${{ steps.targets.outputs.nos }}" \
+            --require-since 2026-10-01
+
       - name: Article quality gates
         if: steps.targets.outputs.nos != ''
         run: |
