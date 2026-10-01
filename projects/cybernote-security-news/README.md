@@ -92,6 +92,16 @@ roundup: true
 
 保存時はPNG署名を確認し、Pillowの`Image.open()`後に`Image.load()`まで実行します。GitHubへ反映した後もファイルを再取得し、同じ検査を行います。
 
+### 生成画像と投稿画像の同一性
+
+2026-10-01以降に作るアイキャッチは、画像生成ツールの出力をそのまま別ファイルへ手作業でコピーせず、必ず `prepare_eyecatch.py` で1200×800 PNGへ変換します。同スクリプトは `<画像名>.identity.json` を生成し、生成元の視覚ハッシュ・GitHub登録版の視覚ハッシュ・SHA-256を保存します。
+
+投稿前に `verify_eyecatch_identity.py` がidentity manifestを検査し、生成元とGitHub画像が別デザイン、GitHub画像が後から置換、またはmanifestが欠落している場合は投稿を停止します。
+
+WordPress更新時も既存の `featured_media` を無条件には再利用しません。WordPressで実際に配信されている画像とGitHub側画像の視覚ハッシュを比較し、一致時のみ再利用します。不一致時は新しい画像をアップロードし、公開後にもfeatured_mediaを再照合します。
+
+公開済み記事は `CyberNote Eyecatch Audit` が毎日07:45 JSTに監査し、GitHub画像とWordPressアイキャッチの不一致をCSVで検出します。
+
 ## GitHub Actions
 
 `.github/workflows/cybernote-security-news.yml`は次のJST時刻にcronで動作します。
