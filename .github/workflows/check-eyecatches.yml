@@ -14,6 +14,14 @@ on:
     paths:
       - "projects/cybernote-security-news/eyecatches/**.png"
       - "eyecatch_file_check.py"
+      - "eyecatch_identity.py"
+      - "prepare_eyecatch.py"
+      - "verify_eyecatch_identity.py"
+      - "projects/cybernote-security-news/eyecatches/**.identity.json"
+      - "eyecatch_identity.py"
+      - "prepare_eyecatch.py"
+      - "verify_eyecatch_identity.py"
+      - "projects/cybernote-security-news/eyecatches/**.identity.json"
       - ".github/workflows/check-eyecatches.yml"
   pull_request:
     paths:
@@ -45,3 +53,13 @@ jobs:
 
       - name: Check eyecatch images
         run: python eyecatch_file_check.py projects/cybernote-security-news/eyecatches
+
+      - name: Check generator identity
+        run: |
+          python verify_eyecatch_identity.py \
+            --ledger projects/cybernote-security-news/data/news_ledger.csv \
+            --images-dir projects/cybernote-security-news/eyecatches \
+            --require-from-no 147
+
+      - name: Run identity regression tests
+        run: python -m unittest projects.cybernote-security-news.tests.test_eyecatch_identity
