@@ -129,6 +129,8 @@ mitre.org / first.org
 - リスト・表の前後には、それぞれ150字以上の説明文を置く
 - 画像には必ず alt を付ける
 - 保存前に品質チェッカーを実行し、本文コア・序文・まとめの実測値を確認する
+- アイキャッチは画像生成後、必ず `prepare_eyecatch.py <生成元画像> <eyecatches/<slug>.png>` で保存し、同時生成される `.identity.json` もGitHubへ登録する
+- 生成元とGitHub登録画像のidentity検査を通過するまで「生成済み」にしない
 
 ### 書き方
 
