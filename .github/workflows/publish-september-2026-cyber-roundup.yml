@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/publish-september-2026-cyber-roundup.yml'
+      - 'projects/cybernote-security-news/articles/september-2026-cyber-incidents-roundup.md'
   workflow_dispatch:
 
 permissions:
