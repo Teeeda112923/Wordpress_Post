@@ -51,6 +51,7 @@ jobs:
             --limit 1 \
             --skip-auth-check \
             --skip-internal-link-resolution \
+            --force-image-upload \
             --fallback-media-id "$FALLBACK_MEDIA_ID" \
             --output-dir "$RESULTS_DIR"
       - name: Show result
