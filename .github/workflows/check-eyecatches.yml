@@ -18,15 +18,15 @@ on:
       - "prepare_eyecatch.py"
       - "verify_eyecatch_identity.py"
       - "projects/cybernote-security-news/eyecatches/**.identity.json"
-      - "eyecatch_identity.py"
-      - "prepare_eyecatch.py"
-      - "verify_eyecatch_identity.py"
-      - "projects/cybernote-security-news/eyecatches/**.identity.json"
       - ".github/workflows/check-eyecatches.yml"
   pull_request:
     paths:
       - "projects/cybernote-security-news/eyecatches/**.png"
+      - "projects/cybernote-security-news/eyecatches/**.identity.json"
       - "eyecatch_file_check.py"
+      - "eyecatch_identity.py"
+      - "prepare_eyecatch.py"
+      - "verify_eyecatch_identity.py"
   workflow_dispatch:
 
 permissions:
@@ -62,4 +62,4 @@ jobs:
             --require-from-no 147
 
       - name: Run identity regression tests
-        run: python -m unittest projects.cybernote-security-news.tests.test_eyecatch_identity
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_eyecatch_identity.py'
