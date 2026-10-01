@@ -1,0 +1,291 @@
+name: Publish Gyazo Incident
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-gyazo-incident.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  SLUG: gyazo-data-breach-23-million-users-2026
+  TARGET_NO: '143'
+  STATUS_FILE: .github/gyazo-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark workflow started
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=started\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\nstarted_utc=%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Mark Gyazo publication workflow start"
+          git push origin HEAD:main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies and Japanese font
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          mkdir -p "$RESULTS_DIR" "$IMAGES_DIR"
+
+      - name: Run CyberNote regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
+      - name: Generate editorial eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          W, H = 1200, 800
+          BG = '#0B1F33'
+          PANEL = '#102A43'
+          PANEL2 = '#0F263D'
+          WHITE = '#F7FAFC'
+          MUTED = '#B7C7D6'
+          CYAN = '#22D3EE'
+          GREEN = '#34D399'
+          RED = '#F43F5E'
+          GRID = '#173550'
+          BORDER = '#31526A'
+
+          regular = '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          bold = '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+
+          def font(path, size):
+              return ImageFont.truetype(path, size, index=0)
+
+          f_small = font(regular, 22)
+          f_body = font(regular, 28)
+          f_label = font(bold, 32)
+          f_head = font(bold, 54)
+          f_big = font(bold, 66)
+          f_num = font(bold, 78)
+
+          image = Image.new('RGB', (W, H), BG)
+          draw = ImageDraw.Draw(image)
+
+          # restrained editorial grid
+          for x in range(60, 1160, 110):
+              draw.line((x, 72, x, 735), fill=GRID, width=1)
+          for y in range(92, 730, 106):
+              draw.line((52, y, 1148, y), fill=GRID, width=1)
+
+          draw.text((68, 48), 'CYBERNOTE  |  SECURITY NEWS  |  2026.10.01', font=f_small, fill=CYAN)
+
+          # left headline block
+          draw.text((68, 132), 'Gyazo', font=f_big, fill=WHITE)
+          draw.text((68, 220), '約2362万件', font=f_num, fill=RED)
+          draw.text((68, 316), 'ユーザーデータ流出', font=f_head, fill=WHITE)
+          draw.line((70, 392, 650, 392), fill=CYAN, width=3)
+          draw.text((70, 420), '画像共有サービスへの不正アクセス', font=f_body, fill=MUTED)
+          draw.text((70, 468), 'パスワード変更と不審な連絡への警戒を', font=f_body, fill=WHITE)
+
+          # information chips
+          chips = [
+              ('匿名ユーザー', '約76%'),
+              ('削除画像メタデータ', '約1.74億件'),
+              ('サービス再開', '9月27日'),
+          ]
+          y = 555
+          for label, value in chips:
+              draw.rounded_rectangle((70, y, 650, y+58), radius=12, fill=PANEL2, outline=BORDER, width=2)
+              draw.text((92, y+13), label, font=f_small, fill=MUTED)
+              tw = draw.textbbox((0,0), value, font=f_label)[2]
+              draw.text((625-tw, y+8), value, font=f_label, fill=GREEN if label == 'サービス再開' else WHITE)
+              y += 70
+
+          # right-side browser/gallery motif
+          draw.rounded_rectangle((715, 120, 1135, 648), radius=24, fill=PANEL, outline=BORDER, width=3)
+          draw.rounded_rectangle((742, 150, 1108, 205), radius=12, fill='#15344F')
+          draw.ellipse((765, 168, 781, 184), fill=RED)
+          draw.ellipse((790, 168, 806, 184), fill='#F6C85F')
+          draw.ellipse((815, 168, 831, 184), fill=GREEN)
+          draw.text((856, 160), 'gyazo.com', font=f_small, fill=MUTED)
+
+          # gallery cards
+          cards = [
+              (755, 235, 910, 330), (928, 235, 1083, 330),
+              (755, 348, 910, 443), (928, 348, 1083, 443),
+              (755, 461, 910, 556), (928, 461, 1083, 556),
+          ]
+          for i, (x0,y0,x1,y1) in enumerate(cards):
+              draw.rounded_rectangle((x0,y0,x1,y1), radius=10, fill='#163853', outline='#2A5069', width=2)
+              draw.rectangle((x0+15,y0+18,x1-15,y1-18), outline=CYAN if i in (0,3) else '#5C7890', width=2)
+              draw.line((x0+28,y1-34,x0+62,y0+42), fill='#6F8CA3', width=3)
+              draw.line((x0+62,y0+42,x1-28,y1-34), fill='#6F8CA3', width=3)
+
+          # unlocked padlock alert
+          lock_x, lock_y = 930, 540
+          draw.arc((lock_x-24, lock_y-92, lock_x+86, lock_y+18), start=185, end=350, fill=RED, width=14)
+          draw.rounded_rectangle((lock_x-20, lock_y-30, lock_x+100, lock_y+82), radius=14, fill=RED)
+          draw.ellipse((lock_x+28, lock_y+8, lock_x+52, lock_y+32), fill=BG)
+          draw.rectangle((lock_x+36, lock_y+25, lock_x+44, lock_y+52), fill=BG)
+
+          draw.text((747, 675), 'DATA BREACH  /  23.62M RECORDS', font=f_small, fill=RED)
+          draw.line((68, 744, 1132, 744), fill=BORDER, width=2)
+          draw.text((68, 756), 'SOURCE: Helpfeel official notices', font=f_small, fill='#7890A6')
+
+          out = Path('projects/cybernote-security-news/eyecatches/gyazo-data-breach-23-million-users-2026.png')
+          image.save(out, format='PNG', optimize=True)
+          with Image.open(out) as check:
+              check.load()
+              assert check.format == 'PNG'
+              assert check.size == (1200, 800)
+              assert check.mode == 'RGB'
+          print(f'generated={out} bytes={out.stat().st_size}')
+          PY
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --results "$RESULTS_DIR/article_quality_results.csv" \
+            --nos "$TARGET_NO" \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NO" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --fallback-media-id "$FALLBACK_MEDIA_ID" \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          from pathlib import Path
+
+          target = os.environ['TARGET_NO']
+          result_files = sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          if not result_files:
+              raise SystemExit('WordPress result CSV was not created')
+          with result_files[-1].open(encoding='utf-8-sig', newline='') as f:
+              rows = list(csv.DictReader(f))
+          matches = [r for r in rows if str(r.get('no','')).strip() == target]
+          if not matches:
+              raise SystemExit(f'No.{target} result is missing')
+          result = matches[-1]
+          status = (result.get('status') or '').strip().lower()
+          if status not in {'posted','updated'}:
+              raise SystemExit(f"Publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
+          post_id = result.get('post_id','')
+          post_link = result.get('post_link','')
+          if not post_id or not post_link:
+              raise SystemExit('WordPress post ID or link is missing')
+
+          ledger = Path(os.environ['LEDGER'])
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              ledger_rows = list(reader)
+          row = next((r for r in ledger_rows if str(r.get('No','')).strip() == target), None)
+          if row is None:
+              raise SystemExit(f'No.{target} not found in ledger')
+          row['投稿ステータス'] = '公開済み'
+          row['WP投稿ID'] = post_id
+          row['WP投稿URL'] = post_link
+          row['最終更新日時'] = result.get('posted_at') or result.get('updated_at') or dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+          row['エラー内容'] = ''
+          with ledger.open('w', encoding='utf-8-sig', newline='') as f:
+              writer = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+
+          status_file = Path(os.environ['STATUS_FILE'])
+          status_file.write_text(
+              'state=published\n'
+              + f'post_id={post_id}\n'
+              + f'post_url={post_link}\n'
+              + f'run_url=https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}\n',
+              encoding='utf-8'
+          )
+          print('PUBLISHED:', post_link)
+          PY
+
+      - name: Commit publication result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER" "$IMAGES_DIR/$SLUG.png" "$STATUS_FILE"
+          git commit -m "Record published Gyazo incident"
+          pushed=0
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=1
+              break
+            fi
+            git pull --rebase origin main
+            sleep $(( attempt * 5 ))
+          done
+          test "$pushed" -eq 1
+
+      - name: Record failure status
+        if: failure()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=failed\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Record failed Gyazo publication" || true
+          git pull --rebase origin main || true
+          git push origin HEAD:main || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gyazo-publication-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
