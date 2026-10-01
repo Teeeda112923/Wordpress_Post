@@ -41,6 +41,13 @@ from urllib3.util.retry import Retry
 # CyberNote GEO Kit（独自プラグイン）用メタの組み立て。
 # 投稿の設計（台帳・下書き→公開・cron）は変えず、メタだけを追加で送る。
 import geo_meta as geo_kit
+from eyecatch_identity import (
+    hash_distance,
+    sha256_file,
+    visual_hash_bytes,
+    visual_hash_file,
+    visually_same,
+)
 
 # ローカル実行時は同じフォルダの .env を自動で読み込む。
 # （GitHub Actions では Secrets が環境変数として渡るため、.env が無くても動く）
@@ -1487,15 +1494,60 @@ class WordPressClient:
         data = self.request("DELETE", f"posts/{post_id}", params={"force": "true"})
         return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
 
+    def get_media_details(self, media_id: int) -> dict[str, Any]:
+        """メディア情報を取得する。取得できなければ空dict。"""
+        if not media_id:
+            return {}
+        try:
+            data = self.request("GET", f"media/{media_id}", params={"context": "edit"})
+        except RuntimeError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
     def get_media_source_url(self, media_id: int) -> str:
         """メディアIDから配信URL（source_url）を取得する。失敗時は空文字。"""
-        if not media_id:
-            return ""
+        return safe_str(self.get_media_details(media_id).get("source_url"))
+
+    def image_url_matches_file(
+        self, source_url: str, image_path: Path
+    ) -> tuple[bool, str]:
+        """WordPress配信画像とローカル画像が視覚的に同じか確認する。
+
+        バイナリSHAだけではCDN/画像最適化で誤判定するため、dHashベースの
+        視覚ハッシュを使う。取得不能は安全側に倒して不一致として扱う。
+        """
+        if not source_url or not image_path.exists():
+            return False, "比較対象がありません"
         try:
-            data = self.request("GET", f"media/{media_id}")
-        except RuntimeError:
-            return ""
-        return safe_str((data or {}).get("source_url")) if isinstance(data, dict) else ""
+            response = requests.get(
+                source_url,
+                headers={
+                    "User-Agent": self.session.headers.get("User-Agent", DEFAULT_USER_AGENT),
+                    "Accept": "image/*",
+                    "Cache-Control": "no-cache",
+                },
+                timeout=90,
+            )
+            response.raise_for_status()
+            remote_hash = visual_hash_bytes(response.content)
+            local_hash = visual_hash_file(image_path)
+            distance = hash_distance(local_hash, remote_hash)
+            if visually_same(local_hash, remote_hash):
+                return True, f"visual hash一致（distance={distance}）"
+            return False, f"visual hash不一致（distance={distance}）"
+        except Exception as exc:
+            return False, f"画像比較に失敗: {type(exc).__name__}: {exc}"
+
+    def media_matches_file(
+        self, media_id: int, image_path: Path
+    ) -> tuple[bool, str, str]:
+        """WordPress media IDとローカル画像の同一性を確認する。"""
+        media = self.get_media_details(media_id)
+        source_url = safe_str(media.get("source_url"))
+        if not source_url:
+            return False, "", f"media id={media_id} のsource_urlを取得できません"
+        matched, detail = self.image_url_matches_file(source_url, image_path)
+        return matched, source_url, detail
 
     def list_media_page(self, page: int) -> list[dict[str, Any]]:
         """メディアライブラリの画像を100件ずつ取得する。範囲外ページは空リスト。"""
@@ -1517,7 +1569,7 @@ class WordPressClient:
         return bool(isinstance(data, dict) and (data.get("deleted") or data.get("id")))
 
     def find_media_uploaded_since(
-        self, filename: str, since: dt.datetime
+        self, filename: str, since: dt.datetime, expected_image: Path | None = None
     ) -> tuple[int, str] | None:
         """直前にアップロードされたメディアを、ファイル名の先頭一致で探す。
 
@@ -1554,7 +1606,17 @@ class WordPressClient:
             except ValueError:
                 continue
             if created >= since:
-                return int(item.get("id") or 0), source_url
+                media_id = int(item.get("id") or 0)
+                if expected_image is not None:
+                    matched, detail = self.image_url_matches_file(source_url, expected_image)
+                    if not matched:
+                        print(
+                            f"  [警告] 直前アップロード候補 media id={media_id} は"
+                            f"生成画像と一致しないため再利用しません: {detail}",
+                            flush=True,
+                        )
+                        continue
+                return media_id, source_url
         return None
 
     def upload_media(self, image_path: Path, alt_text: str = "") -> tuple[int, str]:
@@ -1589,7 +1651,9 @@ class WordPressClient:
                 response = first
             else:
                 print(f"  応答の詳細: {response_hint(first)}", flush=True)
-                landed = self.find_media_uploaded_since(image_path.name, since)
+                landed = self.find_media_uploaded_since(
+                    image_path.name, since, expected_image=image_path
+                )
                 if landed and landed[0]:
                     media_id, source_url = landed
                     print(
@@ -1617,9 +1681,25 @@ class WordPressClient:
             raise RuntimeError(f"メディアアップロード失敗 {extract_api_error(response)}")
         media = response.json()
         media_id = int(media["id"])
-        source_url = media.get("source_url", "")
+        source_url = safe_str(media.get("source_url"))
         if alt_text:
             self.request("POST", f"media/{media_id}", json={"alt_text": alt_text})
+
+        # アップロード直後に、WordPressが保持している画像が送信元と同じデザインか
+        # 必ず確認する。ここで不一致なら記事へ紐付けず停止する。
+        if not source_url:
+            source_url = self.get_media_source_url(media_id)
+        matched, detail = self.image_url_matches_file(source_url, image_path)
+        if not matched:
+            raise RuntimeError(
+                f"アップロード後のアイキャッチ同一性確認に失敗しました "
+                f"(media id={media_id}): {detail}"
+            )
+        print(
+            f"  アイキャッチアップロード検証OK: media id={media_id} / "
+            f"{detail} / local sha256={sha256_file(image_path)[:12]}…",
+            flush=True,
+        )
         return media_id, source_url
 
     def create_post(
@@ -2451,8 +2531,8 @@ def main() -> int:
             body_html = inject_blogcards(body_html, wp.base_url)
 
             # 画像がある場合のみ featured_media を設定する。
-            # 更新時は既存のアイキャッチを再利用し、毎回の再アップロードで
-            # メディアライブラリが増殖するのを防ぐ（--force-image-upload で再アップロード）。
+            # 更新時も「既存media IDがある」という理由だけでは再利用しない。
+            # WordPress配信画像とGitHub側画像の視覚ハッシュが一致した場合だけ再利用する。
             featured_media: int | None = None
             media_url = ""
             post_content = body_html
@@ -2460,11 +2540,18 @@ def main() -> int:
                 if post_id_to_update and existing and not args.force_image_upload:
                     existing_fm = int(existing.get("featured_media") or 0)
                     if existing_fm:
-                        reuse_url = wp.get_media_source_url(existing_fm)
-                        if reuse_url:
+                        matched, reuse_url, detail = wp.media_matches_file(existing_fm, image_path)
+                        if matched:
                             featured_media = existing_fm
                             media_url = reuse_url
-                            print(f"  アイキャッチ再利用: media id={existing_fm}")
+                            print(
+                                f"  アイキャッチ再利用OK: media id={existing_fm} / {detail}"
+                            )
+                        else:
+                            print(
+                                f"  [差し替え] 既存アイキャッチ media id={existing_fm} は"
+                                f"GitHub画像と一致しません: {detail}"
+                            )
                 if featured_media is None:
                     featured_media, media_url = wp.upload_media(image_path, alt_text=alt_text)
                 # タイトルと本文の間（本文先頭）にアイキャッチ画像を差し込む
@@ -2503,6 +2590,23 @@ def main() -> int:
                 seo_description=seo_description,
                 geo_meta=cng_meta,
             )
+            # 投稿レスポンスが指すfeatured_mediaも最終確認する。アップロードが正しくても
+            # 投稿更新時に別media IDが残る事故をここで検出し、公開成功扱いにしない。
+            if image_path and featured_media:
+                returned_fm = int(created.get("featured_media") or featured_media or 0)
+                if returned_fm != int(featured_media):
+                    raise RuntimeError(
+                        f"投稿のfeatured_mediaが想定と異なります "
+                        f"(expected={featured_media}, actual={returned_fm})"
+                    )
+                matched, _, detail = wp.media_matches_file(returned_fm, image_path)
+                if not matched:
+                    raise RuntimeError(
+                        f"公開後のアイキャッチ同一性確認に失敗しました "
+                        f"(media id={returned_fm}): {detail}"
+                    )
+                print(f"  公開後アイキャッチ検証OK: media id={returned_fm} / {detail}")
+
             returned_slug = safe_str(created.get("slug"))
             if returned_slug and returned_slug != slug:
                 print(
