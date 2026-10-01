@@ -29,7 +29,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       - name: Validate eyecatch
-        run: python eyecatch_file_check.py --paths "$IMAGES_DIR/mhlw-labor-economy-whitepaper-ai-2026.png"
+        run: python eyecatch_file_check.py "$IMAGES_DIR/mhlw-labor-economy-whitepaper-ai-2026.png"
       - name: Update WordPress post
         env:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
