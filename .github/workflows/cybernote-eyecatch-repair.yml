@@ -1,0 +1,72 @@
+name: CyberNote Eyecatch Repair
+
+on:
+  workflow_dispatch:
+    inputs:
+      nos:
+        description: "修復するNo（例: 17,54,61 / 123-129）"
+        type: string
+        required: true
+      interval_sec:
+        description: "記事間の待機秒数"
+        type: string
+        required: false
+        default: "120"
+      dry_run:
+        description: "WordPressを変更せず確認だけ行う"
+        type: boolean
+        required: true
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: "1"
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+      - name: Validate local eyecatches
+        run: python eyecatch_file_check.py "$IMAGES_DIR"
+      - name: Repair selected posts
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          flag=""
+          if [ "$INPUT_DRY_RUN" = "true" ]; then
+            flag="--dry-run"
+          fi
+          python wp_auto_post.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --images-dir "$IMAGES_DIR"             --post-status publish             --write-mode upsert             --nos "${{ inputs.nos }}"             --limit 0             --sleep "${{ inputs.interval_sec }}"             --force-image-upload             --skip-internal-link-resolution             --output-dir "$RESULTS_DIR"             $flag
+      - name: Upload repair results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cybernote-eyecatch-repair
+          path: ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
