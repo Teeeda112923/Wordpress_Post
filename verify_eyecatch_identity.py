@@ -42,11 +42,12 @@ def main() -> int:
     parser.add_argument("--ledger", required=True)
     parser.add_argument("--images-dir", required=True)
     parser.add_argument("--nos", default="")
-    parser.add_argument("--require-since", default="2026-10-01")
+    parser.add_argument("--require-since", default="")
+    parser.add_argument("--require-from-no", type=int, default=147)
     args = parser.parse_args()
 
     wanted = parse_nos(args.nos)
-    require_since = dt.date.fromisoformat(args.require_since)
+    require_since = dt.date.fromisoformat(args.require_since) if args.require_since else None
     images_dir = Path(args.images_dir)
     with Path(args.ledger).open(encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
@@ -63,13 +64,17 @@ def main() -> int:
         except ValueError:
             date = dt.date.min
         image = find_image(row, images_dir)
+        no_int = int(no) if no.isdigit() else 0
+        required = no_int >= args.require_from_no
+        if require_since is not None and date >= require_since:
+            required = True
         if image is None:
-            if date >= require_since:
+            if required:
                 print(f"[NG] No.{no}: 画像ファイルが見つかりません")
                 errors += 1
             continue
         identity = manifest_path(image)
-        if not identity.exists() and date < require_since:
+        if not identity.exists() and not required:
             print(f"[LEGACY] No.{no}: identity対象導入前")
             continue
         checked += 1
