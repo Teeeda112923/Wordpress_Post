@@ -20,7 +20,6 @@ env:
   IMAGES_DIR: projects/cybernote-security-news/eyecatches
   RESULTS_DIR: projects/cybernote-security-news/results
   TARGET_NO: '144'
-  TARGET_MEDIA_ID: '5297'
   EXPECTED_MEDIA_NAME: 'daily-security-news-hero-1'
   STATUS_FILE: .github/september-2026-cyber-roundup-publication-status.txt
   PYTHONUNBUFFERED: '1'
@@ -57,7 +56,7 @@ jobs:
             --mode geo \
             --fail-on-error
 
-      - name: Verify requested existing eyecatch
+      - name: Find and verify requested existing eyecatch
         env:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
           WP_USERNAME: ${{ secrets.WP_USERNAME }}
@@ -74,16 +73,64 @@ jobs:
               os.environ["WP_USERNAME"],
               os.environ["WP_APP_PASSWORD"],
           )
-          media_id = int(os.environ["TARGET_MEDIA_ID"])
           expected = os.environ["EXPECTED_MEDIA_NAME"]
-          source = wp.get_media_source_url(media_id)
-          if not source:
-              raise SystemExit(f"media id={media_id} がWordPress上で確認できません")
-          print("eyecatch_source=", source)
-          if expected not in source:
-              raise SystemExit(
-                  f"指定アイキャッチとmedia id={media_id}が一致しません: {source}"
+          found = None
+
+          # まずメディア検索を試し、見つからなければ2026年8月分をページングして
+          # source_url のファイル名から厳密に探す。
+          try:
+              items = wp.request(
+                  "GET", "media",
+                  params={"search": expected, "per_page": 100, "context": "edit"},
               )
+          except Exception:
+              items = []
+          for item in items if isinstance(items, list) else []:
+              source = str(item.get("source_url") or "")
+              if expected in source:
+                  found = (int(item["id"]), source)
+                  break
+
+          if found is None:
+              for page in range(1, 21):
+                  try:
+                      items = wp.request(
+                          "GET", "media",
+                          params={
+                              "after": "2026-08-01T00:00:00",
+                              "before": "2026-09-01T00:00:00",
+                              "per_page": 100,
+                              "page": page,
+                              "orderby": "date",
+                              "order": "asc",
+                              "context": "edit",
+                          },
+                      )
+                  except RuntimeError as exc:
+                      if "rest_post_invalid_page_number" in str(exc):
+                          break
+                      raise
+                  if not isinstance(items, list) or not items:
+                      break
+                  for item in items:
+                      source = str(item.get("source_url") or "")
+                      if expected in source:
+                          found = (int(item["id"]), source)
+                          break
+                  if found is not None or len(items) < 100:
+                      break
+
+          if found is None:
+              raise SystemExit(f"指定アイキャッチ '{expected}' がWordPressメディア内で見つかりません")
+
+          media_id, source = found
+          print(f"eyecatch_media_id={media_id}")
+          print(f"eyecatch_source={source}")
+          if "/2026/08/" not in source or expected not in source:
+              raise SystemExit(f"指定アイキャッチのURL検証に失敗しました: {source}")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write(f"TARGET_MEDIA_ID={media_id}\n")
           PY
 
       - name: Publish to WordPress
