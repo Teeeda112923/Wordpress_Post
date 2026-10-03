@@ -97,7 +97,7 @@ Google Sitesは正規のサービスであり、ドメインごと遮断する�
 
 届いた通知が本物かどうかは、いくつかの箇所を見れば高い確度で判断できます。確認すべきポイントと、心当たりのない通知が届いたときの具体的な対処手順を紹介します。どれもメールのリンクを押す前に行うことが前提です。
 
-![Googleセキュリティ通知が本物か偽物かを見分ける確認ポイント]({{INLINE_IMAGE_URL}})
+![Googleセキュリティ通知が本物か偽物かを見分ける確認ポイント](https://www.cybernote.click/wp-content/uploads/2026/10/no-reply-accounts-google-com-honmono-guide.png)
 
 ### 確認すべき3つのポイント
 
