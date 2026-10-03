@@ -1,0 +1,218 @@
+name: Publish Google Sites Phishing Article
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-google-sites-phishing.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  ARTICLE_IMAGES_DIR: projects/cybernote-security-news/article-images
+  RESULTS_DIR: projects/cybernote-security-news/results
+  SLUG: no-reply-accounts-google-com-honmono
+  TARGET_NO: '154'
+  ARTICLE: projects/cybernote-security-news/articles/no-reply-accounts-google-com-honmono.md
+  EYECATCH: projects/cybernote-security-news/eyecatches/no-reply-accounts-google-com-honmono.png
+  INLINE_IMAGE: projects/cybernote-security-news/article-images/no-reply-accounts-google-com-honmono-guide.png
+  STAGING_DIR: .github/assets/google-sites-phishing
+  STATUS_FILE: .github/google-sites-phishing-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark workflow started
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=started\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\nstarted_utc=%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Mark Google Sites phishing publication start"
+          git push origin HEAD:main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          mkdir -p "$RESULTS_DIR" "$IMAGES_DIR" "$ARTICLE_IMAGES_DIR"
+
+      - name: Restore generated images
+        run: |
+          if [ ! -f "$EYECATCH" ]; then
+            cat "$STAGING_DIR"/eyecatch.part*.b64 | base64 -d > "$EYECATCH"
+          fi
+          if [ ! -f "$INLINE_IMAGE" ]; then
+            cat "$STAGING_DIR"/inline.part*.b64 | base64 -d > "$INLINE_IMAGE"
+          fi
+          python - <<'PY'
+          import os
+          from PIL import Image
+          for key in ("EYECATCH", "INLINE_IMAGE"):
+              path = os.environ[key]
+              with Image.open(path) as im:
+                  im.load()
+                  assert im.format == "PNG", (path, im.format)
+                  assert im.size == (1200, 800), (path, im.size)
+              print("validated", path)
+          PY
+
+      - name: Run CyberNote regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --results "$RESULTS_DIR/article_quality_results.csv"             --nos "$TARGET_NO"             --include-unstarted             --mode geo             --fail-on-error
+
+      - name: Upload H2 illustration and inject into article
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          from wp_auto_post import WordPressClient
+
+          article = Path(os.environ["ARTICLE"])
+          md = article.read_text(encoding="utf-8")
+          marker = "{{INLINE_IMAGE_URL}}"
+          if marker in md:
+              wp = WordPressClient(os.environ["WP_BASE_URL"], os.environ["WP_USERNAME"], os.environ["WP_APP_PASSWORD"])
+              _, url = wp.upload_media(Path(os.environ["INLINE_IMAGE"]), alt_text="")
+              if not url:
+                  raise RuntimeError("inline media URL missing")
+              md = md.replace(marker, url)
+              article.write_text(md, encoding="utf-8")
+              print("inline image uploaded:", url)
+          else:
+              print("inline image URL already injected; skipping upload")
+          PY
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --images-dir "$IMAGES_DIR"             --post-status publish             --write-mode upsert             --category "サイバーセキュリティ"             --nos "$TARGET_NO"             --limit 1             --skip-auth-check             --skip-internal-link-resolution             --fallback-media-id "$FALLBACK_MEDIA_ID"             --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          from pathlib import Path
+
+          target = os.environ["TARGET_NO"]
+          result_files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          if not result_files:
+              raise SystemExit("WordPress result CSV was not created")
+          with result_files[-1].open(encoding="utf-8-sig", newline="") as f:
+              rows = list(csv.DictReader(f))
+          matches = [r for r in rows if str(r.get("no","")).strip() == target]
+          if not matches:
+              raise SystemExit(f"No.{target} result is missing")
+          result = matches[-1]
+          status = (result.get("status") or "").strip().lower()
+          if status not in {"posted","updated"}:
+              raise SystemExit(f"Publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
+          post_id = result.get("post_id","")
+          post_link = result.get("post_link","")
+          if not post_id or not post_link:
+              raise SystemExit("WordPress post ID or link is missing")
+
+          ledger = Path(os.environ["LEDGER"])
+          with ledger.open(encoding="utf-8-sig", newline="") as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              ledger_rows = list(reader)
+          row = next((r for r in ledger_rows if str(r.get("No","")).strip() == target), None)
+          if row is None:
+              raise SystemExit(f"No.{target} not found in ledger")
+          row["投稿ステータス"] = "公開済み"
+          row["WP投稿ID"] = post_id
+          row["WP投稿URL"] = post_link
+          row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          row["エラー内容"] = ""
+          with ledger.open("w", encoding="utf-8-sig", newline="") as f:
+              writer = csv.DictWriter(f, fieldnames=fields, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+
+          Path(os.environ["STATUS_FILE"]).write_text(
+              "state=published\n"
+              + f"post_id={post_id}\n"
+              + f"post_url={post_link}\n"
+              + f"run_url=https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n",
+              encoding="utf-8"
+          )
+          print("PUBLISHED:", post_link)
+          PY
+
+      - name: Commit publication assets and result
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm -r "$STAGING_DIR" 2>/dev/null || true
+          git add "$LEDGER" "$ARTICLE" "$EYECATCH" "$INLINE_IMAGE" "$STATUS_FILE"
+          git commit -m "Record published Google Sites phishing article"
+          pushed=0
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              pushed=1
+              break
+            fi
+            git pull --rebase origin main
+            sleep $(( attempt * 5 ))
+          done
+          test "$pushed" -eq 1
+
+      - name: Record failure status
+        if: failure()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=failed\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Record failed Google Sites phishing publication" || true
+          git pull --rebase origin main || true
+          git push origin HEAD:main || true
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: google-sites-phishing-publication-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 30
