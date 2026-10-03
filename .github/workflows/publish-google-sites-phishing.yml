@@ -1,4 +1,5 @@
 name: Publish Google Sites Phishing Article
+# rerun after long-form quality exception
 
 on:
   push:
