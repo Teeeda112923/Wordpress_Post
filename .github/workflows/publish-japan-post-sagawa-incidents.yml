@@ -1,0 +1,337 @@
+name: Publish Japan Post and Sagawa Incidents
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-japan-post-sagawa-incidents.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  TARGET_NOS: '158,159'
+  STATUS_FILE: .github/japan-post-sagawa-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Mark workflow started
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf 'state=started\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\nstarted_utc=%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATUS_FILE"
+          git add -f "$STATUS_FILE"
+          git commit -m "Mark Japan Post and Sagawa publication start"
+          git push origin HEAD:main
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies and Japanese font
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          mkdir -p "$RESULTS_DIR" "$IMAGES_DIR"
+
+      - name: Generate dedicated editorial eyecatches
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+          import hashlib
+
+          W, H = 1200, 800
+          BG = '#0B1F33'
+          PANEL = '#102A43'
+          PANEL2 = '#0F263D'
+          WHITE = '#F7FAFC'
+          MUTED = '#B7C7D6'
+          CYAN = '#22D3EE'
+          GREEN = '#34D399'
+          RED = '#F43F5E'
+          GRID = '#173550'
+          BORDER = '#31526A'
+          regular = '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          bold = '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+
+          def f(path, size):
+              return ImageFont.truetype(path, size, index=0)
+
+          F18=f(regular,18); F22=f(regular,22); F25=f(regular,25); F28=f(regular,28)
+          FB28=f(bold,28); FB34=f(bold,34); FB46=f(bold,46); FB58=f(bold,58); FB68=f(bold,68)
+
+          def base():
+              im=Image.new('RGB',(W,H),BG)
+              d=ImageDraw.Draw(im)
+              for x in range(55,1160,110): d.line((x,70,x,742),fill=GRID,width=1)
+              for y in range(90,735,105): d.line((48,y,1152,y),fill=GRID,width=1)
+              d.text((60,42),'CYBERNOTE  |  SECURITY NEWS  |  2026.10.04',font=F18,fill=CYAN)
+              return im,d
+
+          def pill(d,box,label,value,value_color=WHITE):
+              x0,y0,x1,y1=box
+              d.rounded_rectangle(box,radius=12,fill=PANEL2,outline=BORDER,width=2)
+              d.text((x0+20,y0+15),label,font=F22,fill=MUTED)
+              bb=d.textbbox((0,0),value,font=FB28)
+              d.text((x1-20-(bb[2]-bb[0]),y0+11),value,font=FB28,fill=value_color)
+
+          # Japan Post app incident
+          im,d=base()
+          d.text((62,124),'郵便局アプリ',font=FB68,fill=WHITE)
+          d.text((62,214),'不正アクセス',font=FB58,fill=RED)
+          d.text((62,305),'19人分・69件',font=FB58,fill=CYAN)
+          d.text((62,380),'個人情報を不正取得',font=FB46,fill=WHITE)
+          d.line((62,448,650,448),fill=CYAN,width=3)
+          d.text((62,475),'ゆうID・住所録・送り状情報も対象',font=F28,fill=MUTED)
+
+          pill(d,(62,552,650,612),'緊急メンテナンス','9月25日',RED)
+          pill(d,(62,625,650,685),'サービス再開','9月26日',GREEN)
+
+          # phone / document motif
+          d.rounded_rectangle((735,120,1075,655),radius=34,fill='#0A2A46',outline='#1A6EA3',width=5)
+          d.rounded_rectangle((765,162,1045,615),radius=22,fill='#F6FAFD')
+          d.rounded_rectangle((835,198,975,330),radius=24,fill=RED)
+          d.polygon([(872,238),(905,218),(938,238),(905,258)],fill=WHITE)
+          d.rectangle((872,238,938,285),fill=WHITE)
+          d.line((905,220,905,286),fill=RED,width=5)
+          for yy in (375,425,475):
+              d.rounded_rectangle((810,yy,995,yy+28),radius=10,fill='#D9E6F0')
+          # warning triangle
+          d.polygon([(770,650),(1020,650),(895,445)],fill=RED)
+          d.ellipse((881,520,909,548),fill=WHITE)
+          d.rectangle((889,548,901,592),fill=WHITE)
+          d.text((735,695),'PERSONAL DATA  /  CONFIRMED ACCESS',font=F18,fill=RED)
+          d.text((62,742),'SOURCE: Japan Post official notice / Security NEXT',font=F18,fill='#7890A6')
+          out=Path('projects/cybernote-security-news/eyecatches/japan-post-app-data-breach-2026.png')
+          im.save(out,'PNG',optimize=True)
+
+          # Sagawa incident
+          im,d=base()
+          d.text((62,124),'佐川急便',font=FB68,fill=WHITE)
+          d.text((62,214),'不正アクセス',font=FB58,fill=RED)
+          d.text((62,305),'個人情報流出の可能性',font=FB46,fill=CYAN)
+          d.line((62,377,680,377),fill=CYAN,width=3)
+          d.text((62,405),'約100日分の荷物データが対象',font=FB34,fill=WHITE)
+          d.text((62,460),'氏名・住所・電話番号などを含む可能性',font=F25,fill=MUTED)
+
+          pill(d,(62,550,650,612),'Webサービス','9つ停止',RED)
+          pill(d,(62,625,650,687),'集荷・配達','通常どおり',GREEN)
+
+          # package / route motif
+          d.rounded_rectangle((738,126,1128,650),radius=24,fill=PANEL,outline=BORDER,width=3)
+          # package
+          d.polygon([(790,360),(910,315),(1035,360),(915,407)],fill='#B98A56')
+          d.polygon([(790,360),(915,407),(915,555),(790,505)],fill='#9D7044')
+          d.polygon([(915,407),(1035,360),(1035,505),(915,555)],fill='#C59A68')
+          d.rectangle((850,421,955,482),fill='#E6EEF4')
+          d.line((870,440,935,440),fill='#6A8297',width=4)
+          d.line((870,456,925,456),fill='#6A8297',width=4)
+          # route / data nodes
+          pts=[(790,230),(900,185),(1010,245),(1090,190)]
+          for a,b in zip(pts,pts[1:]): d.line((a[0],a[1],b[0],b[1]),fill=CYAN,width=4)
+          for x,y in pts: d.ellipse((x-11,y-11,x+11,y+11),fill=CYAN)
+          # warning
+          d.polygon([(845,360),(980,360),(912,245)],fill=RED)
+          d.ellipse((899,290,925,316),fill=WHITE)
+          d.rectangle((906,316,918,345),fill=WHITE)
+          # simple truck
+          d.rounded_rectangle((770,585,940,630),radius=8,fill='#D9E6F0')
+          d.rectangle((940,600,1000,630),fill='#D9E6F0')
+          d.ellipse((800,615,840,655),fill='#102A43')
+          d.ellipse((945,615,985,655),fill='#102A43')
+          d.text((738,695),'TRACKING SERVICE  /  DATA EXPOSURE RISK',font=F18,fill=RED)
+          d.text((62,742),'SOURCE: Sagawa Express official notices / Security NEXT',font=F18,fill='#7890A6')
+          out2=Path('projects/cybernote-security-news/eyecatches/sagawa-express-tracking-data-breach-2026.png')
+          im.save(out2,'PNG',optimize=True)
+
+          for p in (out,out2):
+              with Image.open(p) as chk:
+                  chk.load()
+                  assert chk.format == 'PNG'
+                  assert chk.size == (1200,800)
+                  assert chk.mode == 'RGB'
+              print(f'{p} bytes={p.stat().st_size} sha256={hashlib.sha256(p.read_bytes()).hexdigest()}')
+          PY
+
+      - name: Run CyberNote regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --results "$RESULTS_DIR/article_quality_results.csv" \
+            --nos "$TARGET_NOS" \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+
+      - name: Publish both articles to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NOS" \
+            --limit 2 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --fallback-media-id "$FALLBACK_MEDIA_ID" \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication, GEO metadata and eyecatch identity
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import json
+          import os
+          from pathlib import Path
+          from wp_auto_post import WordPressClient
+
+          expected = {
+              '158': ('japan-post-app-data-breach-2026', 'japan-post-app-data-breach-2026.png'),
+              '159': ('sagawa-express-tracking-data-breach-2026', 'sagawa-express-tracking-data-breach-2026.png'),
+          }
+          result_files = sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          if not result_files:
+              raise SystemExit('WordPress result CSV was not created')
+          with result_files[-1].open(encoding='utf-8-sig', newline='') as f:
+              results = list(csv.DictReader(f))
+
+          wp = WordPressClient(
+              os.environ['WP_BASE_URL'],
+              os.environ['WP_USERNAME'],
+              os.environ['WP_APP_PASSWORD'],
+          )
+
+          published = {}
+          for no, (slug, filename) in expected.items():
+              rows = [r for r in results if str(r.get('no','')).strip() == no]
+              if not rows:
+                  raise SystemExit(f'No.{no} result is missing')
+              result = rows[-1]
+              status = (result.get('status') or '').strip().lower()
+              if status not in {'posted','updated'}:
+                  raise SystemExit(f"No.{no} publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
+              post_id = int(result.get('post_id') or 0)
+              post_link = result.get('post_link','')
+              if not post_id or not post_link:
+                  raise SystemExit(f'No.{no} post ID/link missing')
+
+              post = wp.request('GET', f'posts/{post_id}', params={'context':'edit'})
+              media_id = int(post.get('featured_media') or 0)
+              if not media_id:
+                  raise SystemExit(f'No.{no} featured_media is empty')
+              media = wp.request('GET', f'media/{media_id}', params={'context':'edit'})
+              source = str(media.get('source_url') or '')
+              if slug not in source:
+                  raise SystemExit(
+                      f'No.{no} eyecatch mismatch: expected slug={slug}, featured_media={media_id}, source={source}'
+                  )
+
+              meta = post.get('meta') or {}
+              required = ['_cng_answer','_cng_faq','_cng_sources']
+              missing = [k for k in required if not meta.get(k)]
+              if missing:
+                  raise SystemExit(f"No.{no} GEO Site Kit metadata missing: {', '.join(missing)}")
+              faq = json.loads(meta['_cng_faq']) if isinstance(meta['_cng_faq'], str) else meta['_cng_faq']
+              sources = json.loads(meta['_cng_sources']) if isinstance(meta['_cng_sources'], str) else meta['_cng_sources']
+              if len(faq) < 2 or len(sources) < 1:
+                  raise SystemExit(f'No.{no} GEO metadata is incomplete')
+
+              local = Path(os.environ['IMAGES_DIR']) / filename
+              if not local.exists():
+                  raise SystemExit(f'No.{no} local eyecatch missing: {local}')
+              published[no] = {
+                  'post_id': str(post_id),
+                  'post_link': post_link,
+                  'featured_media': str(media_id),
+                  'media_source': source,
+                  'faq': str(len(faq)),
+                  'sources': str(len(sources)),
+              }
+              print(f"No.{no} OK post={post_link} featured_media={media_id} source={source}")
+
+          ledger = Path(os.environ['LEDGER'])
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              ledger_rows = list(reader)
+          for row in ledger_rows:
+              no = str(row.get('No','')).strip()
+              if no in published:
+                  row['投稿ステータス'] = '公開済み'
+                  row['WP投稿ID'] = published[no]['post_id']
+                  row['WP投稿URL'] = published[no]['post_link']
+                  row['最終更新日時'] = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                  row['エラー内容'] = ''
+          with ledger.open('w', encoding='utf-8-sig', newline='') as f:
+              writer = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
+              writer.writeheader()
+              writer.writerows(ledger_rows)
+
+          lines=['state=published']
+          for no in ('158','159'):
+              p=published[no]
+              lines += [
+                  f'no_{no}_post_id={p["post_id"]}',
+                  f'no_{no}_post_url={p["post_link"]}',
+                  f'no_{no}_featured_media={p["featured_media"]}',
+                  f'no_{no}_media_source={p["media_source"]}',
+                  f'no_{no}_geo_faq={p["faq"]}',
+                  f'no_{no}_geo_sources={p["sources"]}',
+              ]
+          lines.append(f'run_url=https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}')
+          Path(os.environ['STATUS_FILE']).write_text('\n'.join(lines)+'\n', encoding='utf-8')
+          PY
+
+      - name: Commit publication result and exact eyecatches
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER" \
+            "$IMAGES_DIR/japan-post-app-data-breach-2026.png" \
+            "$IMAGES_DIR/sagawa-express-tracking-data-breach-2026.png" \
+            "$STATUS_FILE"
+          git commit -m "Record Japan Post and Sagawa incident publications"
+          git push origin HEAD:main
