@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: cybernote-security-news
+  group: cybernote-security-news-fast-publish
   cancel-in-progress: false
 
 env:
@@ -22,6 +22,8 @@ env:
   TARGET_NOS: '158,159'
   STATUS_FILE: .github/japan-post-sagawa-publication-status.txt
   PYTHONUNBUFFERED: '1'
+  WP_BLOCK_RETRY_COUNT: '0'
+  WP_SERVER_ERROR_RETRY_COUNT: '0'
 
 jobs:
   publish:
