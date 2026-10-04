@@ -1,5 +1,7 @@
 name: Publish Times Car Incident
 
+# Refresh trigger: 2026-10-04 identity-document scope clarification
+
 on:
   push:
     branches: [main]
