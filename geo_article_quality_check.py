@@ -25,6 +25,7 @@ PRIMARY_DOMAINS = {
     "thermofisher.com", "hitachi.co.jp", "ibm.com", "jp.sharp", "adobe.com",
     "sogo.nu", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
     "trendmicro.com", "aboutamazon.com", "aws.amazon.com", "nato.int",
+    "japanpost.jp", "sagawa-exp.co.jp",
 }
 
 IMPACT_PATTERNS = {
