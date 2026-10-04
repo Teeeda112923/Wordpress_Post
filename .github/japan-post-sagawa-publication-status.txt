@@ -1,4 +1,14 @@
-state=started
-run_id=37195642768
+state=published
+no_158_post_id=8466
+no_158_post_url=https://www.cybernote.click/2026/10/04/japan-post-app-data-breach-2026/
+no_158_featured_media=8465
+no_158_media_source=https://www.cybernote.click/wp-content/uploads/2026/10/japan-post-app-data-breach-2026.png
+no_158_geo_faq=3
+no_158_geo_sources=3
+no_159_post_id=8468
+no_159_post_url=https://www.cybernote.click/2026/10/04/sagawa-express-tracking-data-breach-2026/
+no_159_featured_media=8467
+no_159_media_source=https://www.cybernote.click/wp-content/uploads/2026/10/sagawa-express-tracking-data-breach-2026.png
+no_159_geo_faq=3
+no_159_geo_sources=4
 run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/37195642768
-started_utc=2026-10-04T10:31:42Z
