@@ -1,0 +1,160 @@
+name: Publish AI Patch Tuesday Column
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-ai-patch-tuesday-column.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  TARGET_NO: '161'
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          mkdir -p "$RESULTS_DIR"
+
+      - name: Eyecatch identity gate
+        run: |
+          python verify_eyecatch_identity.py \
+            --ledger "$LEDGER" \
+            --images-dir "$IMAGES_DIR" \
+            --nos "$TARGET_NO" \
+            --require-from-no 147
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --results "$RESULTS_DIR/article_quality_results.csv" \
+            --nos "$TARGET_NO" \
+            --include-unstarted \
+            --mode geo \
+            --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NO" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --fallback-media-id "$FALLBACK_MEDIA_ID" \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify result and update ledger
+        run: |
+          python - <<'PY'
+          import csv
+          import datetime as dt
+          import os
+          import sys
+          from pathlib import Path
+
+          selected = os.environ["TARGET_NO"].strip()
+          result_files = sorted(Path(os.environ["RESULTS_DIR"]).glob("results_*.csv"))
+          if not result_files:
+              raise SystemExit("投稿結果CSVが見つかりません")
+          with result_files[-1].open(encoding="utf-8-sig", newline="") as f:
+              result_rows = list(csv.DictReader(f))
+          matches = [r for r in result_rows if str(r.get("no", "")).strip() == selected]
+          if not matches:
+              raise SystemExit(f"No.{selected} の投稿結果が見つかりません")
+          result = matches[-1]
+          status = (result.get("status") or "").strip().lower()
+          if status not in {"posted", "updated"}:
+              raise SystemExit(f"投稿失敗: {status}: {result.get('error_content') or result.get('message') or ''}")
+          post_id = result.get("post_id", "")
+          post_link = result.get("post_link", "")
+          if not post_id or not post_link:
+              raise SystemExit("WordPress投稿IDまたはURLが取得できません")
+          print(f"PUBLICATION_OK post_id={post_id} post_link={post_link}")
+
+          ledger_path = Path(os.environ["LEDGER"])
+          with ledger_path.open(encoding="utf-8-sig", newline="") as f:
+              reader = csv.DictReader(f)
+              fieldnames = reader.fieldnames or []
+              rows = list(reader)
+          found = False
+          for row in rows:
+              if str(row.get("No", "")).strip() == selected:
+                  row["投稿ステータス"] = "公開済み"
+                  row["WP投稿ID"] = post_id
+                  row["WP投稿URL"] = post_link
+                  row["最終更新日時"] = result.get("posted_at") or result.get("updated_at") or dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                  row["エラー内容"] = ""
+                  found = True
+                  break
+          if not found:
+              raise SystemExit(f"管理簿にNo.{selected}が見つかりません")
+          with ledger_path.open("w", encoding="utf-8-sig", newline="") as f:
+              writer = csv.DictWriter(f, fieldnames=fieldnames, lineterminator="\n")
+              writer.writeheader()
+              writer.writerows(rows)
+          PY
+
+      - name: Commit ledger update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER"
+          if git diff --cached --quiet; then
+            echo "管理簿変更なし"
+          else
+            git commit -m "Update CyberNote publish status for AI Patch Tuesday column"
+            pushed=0
+            for attempt in 1 2 3; do
+              if git push; then
+                pushed=1
+                break
+              fi
+              git pull --rebase origin main
+              sleep $(( attempt * 5 ))
+            done
+            if [ "$pushed" -ne 1 ]; then
+              echo "::error::投稿は完了しましたが管理簿のpushに失敗しました"
+              exit 1
+            fi
+          fi
