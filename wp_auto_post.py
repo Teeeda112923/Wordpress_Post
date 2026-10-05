@@ -1897,6 +1897,11 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--allow-no-image",
+        action="store_true",
+        help="アイキャッチが壊れている・見つからない場合でも、画像なしで本文投稿を続行する",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="--delete-managed / --cleanup-media の確認プロンプトをスキップ",
@@ -2338,7 +2343,13 @@ def main() -> int:
         # WARN（PNG以外・比率違い）は従来どおり投稿を続ける。
         use_fallback_media = False
         if img_chk["level"] == "NG":
-            if fallback_media_id:
+            if args.allow_no_image:
+                image_path = None
+                result["image_status"] = "画像なし"
+                result["image_error"] = img_chk["error_content"]
+                result["image_file"] = "（画像なし）"
+                print(f"  [画像なし] {img_chk['error_content']} -> 本文のみ投稿します")
+            elif fallback_media_id:
                 # 画像が壊れている・見つからない場合でも記事自体は落とさず、
                 # 既定のアイキャッチで投稿する。壊れたPNGを送るとサムネイル生成で
                 # サーバー側が500を返すため、ファイルは送らずメディアIDだけを使う。
