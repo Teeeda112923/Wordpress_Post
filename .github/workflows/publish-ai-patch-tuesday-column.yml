@@ -65,7 +65,7 @@ jobs:
           python wp_auto_post.py \
             --input "$LEDGER" \
             --articles-dir "$ARTICLES_DIR" \
-            --images-dir "$RESULTS_DIR/no-images" \
+            --images-dir "$IMAGES_DIR" \
             --post-status publish \
             --write-mode upsert \
             --category "サイバーセキュリティ" \
@@ -73,7 +73,6 @@ jobs:
             --limit 1 \
             --skip-auth-check \
             --skip-internal-link-resolution \
-            --allow-no-image \
             --no-inline-eyecatch \
             --output-dir "$RESULTS_DIR"
 
