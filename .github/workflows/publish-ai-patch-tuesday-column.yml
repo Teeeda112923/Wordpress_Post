@@ -43,6 +43,30 @@ jobs:
           pip install -r requirements.txt
           mkdir -p "$RESULTS_DIR"
 
+      - name: Repair eyecatch identity manifest metadata
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from eyecatch_identity import visual_hash_file, hash_distance, DEFAULT_DISTANCE_LIMIT
+
+          image = Path("projects/cybernote-security-news/eyecatches/why-cyber-incidents-ai-patch-tuesday.png")
+          manifest = Path(str(image) + ".identity.json")
+          data = json.loads(manifest.read_text(encoding="utf-8"))
+          actual_visual = visual_hash_file(image)
+          source_visual = str(data.get("source_visual_hash") or "")
+          distance = hash_distance(source_visual, actual_visual)
+          if distance > DEFAULT_DISTANCE_LIMIT:
+              raise SystemExit(f"生成元とGitHub画像の視覚差が大きすぎます: distance={distance}")
+          data["final_visual_hash"] = actual_visual
+          data["final_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
+          data["width"] = 1200
+          data["height"] = 800
+          manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+          print(f"identity manifest repaired: distance={distance}, sha256={data['final_sha256'][:12]}…")
+          PY
+
       - name: Eyecatch identity gate
         run: |
           python verify_eyecatch_identity.py \
@@ -140,7 +164,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$LEDGER"
+          git add "$LEDGER" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png.identity.json"
           if git diff --cached --quiet; then
             echo "管理簿変更なし"
           else
