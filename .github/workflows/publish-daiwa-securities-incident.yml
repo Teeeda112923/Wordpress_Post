@@ -1,0 +1,213 @@
+name: Publish Daiwa Securities Incident
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-daiwa-securities-incident.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news-fast-publish
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  TARGET_NO: '162'
+  SLUG: daiwa-securities-data-breach-2026
+  STATUS_FILE: .github/daiwa-securities-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+  WP_BLOCK_RETRY_COUNT: '0'
+  WP_SERVER_ERROR_RETRY_COUNT: '0'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies and Japanese font
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          mkdir -p "$RESULTS_DIR" "$IMAGES_DIR"
+
+      - name: Generate and bind editorial eyecatch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageDraw, ImageFont
+
+          W,H=1200,800
+          im=Image.new('RGB',(W,H),'#0B1F33')
+          d=ImageDraw.Draw(im)
+          reg='/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc'
+          bold='/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc'
+          def f(path,size): return ImageFont.truetype(path,size,index=0)
+          F18=f(reg,18); F25=f(reg,25); FB26=f(bold,26); FB42=f(bold,42); FB56=f(bold,56); FB68=f(bold,68)
+
+          for x in range(55,1160,110): d.line((x,70,x,742),fill='#173550',width=1)
+          for y in range(90,735,105): d.line((48,y,1152,y),fill='#173550',width=1)
+          d.text((60,42),'CYBERNOTE  |  SECURITY NEWS  |  2026.10.05',font=F18,fill='#22D3EE')
+
+          d.text((62,125),'大和証券',font=FB68,fill='#F7FAFC')
+          d.text((62,220),'委託先に不正アクセス',font=FB56,fill='#F43F5E')
+          d.text((62,315),'約11万人',font=FB68,fill='#22D3EE')
+          d.text((62,405),'顧客情報漏えいの可能性',font=FB42,fill='#F7FAFC')
+          d.line((62,475,675,475),fill='#22D3EE',width=3)
+
+          def pill(y,label,value,value_fill):
+              box=(62,y,675,y+62)
+              d.rounded_rectangle(box,radius=12,fill='#0F263D',outline='#31526A',width=2)
+              d.text((82,y+17),label,font=F25,fill='#B7C7D6')
+              bb=d.textbbox((0,0),value,font=FB26)
+              d.text((650-(bb[2]-bb[0]),y+14),value,font=FB26,fill=value_fill)
+          pill(520,'対象情報','約22万件','#22D3EE')
+          pill(596,'不正取引','10/5時点で未確認','#34D399')
+
+          d.rounded_rectangle((760,128,1110,650),radius=24,fill='#102A43',outline='#31526A',width=3)
+          d.rounded_rectangle((820,185,1050,520),radius=18,fill='#E9F1F7')
+          d.rectangle((850,225,1020,270),fill='#B9C9D6')
+          for y in (315,370,425):
+              d.rounded_rectangle((850,y,1005,y+24),radius=8,fill='#C7D7E3')
+          for y in (315,370,425):
+              d.ellipse((800,y+2,824,y+26),fill='#22D3EE')
+              d.line((824,y+14,850,y+14),fill='#22D3EE',width=4)
+          d.polygon([(785,590),(1080,590),(932,360)],fill='#F43F5E')
+          d.rectangle((922,440,942,515),fill='#F7FAFC')
+          d.ellipse((922,535,942,555),fill='#F7FAFC')
+          d.text((760,692),'THIRD-PARTY SERVER  /  CUSTOMER DATA',font=F18,fill='#F43F5E')
+          d.text((62,742),'SOURCE: Daiwa Securities / Reuters',font=F18,fill='#7890A6')
+
+          src=Path('/tmp/daiwa-source.png')
+          im.save(src,'PNG',optimize=True)
+          print(src)
+          PY
+          python prepare_eyecatch.py /tmp/daiwa-source.png "$IMAGES_DIR/$SLUG.png"
+          python verify_eyecatch_identity.py             --ledger "$LEDGER"             --images-dir "$IMAGES_DIR"             --nos "$TARGET_NO"             --require-from-no 147
+
+      - name: Run regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --results "$RESULTS_DIR/article_quality_results.csv"             --nos "$TARGET_NO"             --include-unstarted             --mode geo             --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --images-dir "$IMAGES_DIR"             --post-status publish             --write-mode upsert             --category "サイバーセキュリティ"             --nos "$TARGET_NO"             --limit 1             --skip-auth-check             --skip-internal-link-resolution             --fallback-media-id "$FALLBACK_MEDIA_ID"             --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python - <<'PY'
+          import csv, datetime as dt, json, os
+          from pathlib import Path
+          from wp_auto_post import WordPressClient
+
+          no=os.environ['TARGET_NO']; slug=os.environ['SLUG']
+          files=sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          if not files: raise SystemExit('result CSV missing')
+          with files[-1].open(encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          matches=[r for r in rows if str(r.get('no','')).strip()==no]
+          if not matches: raise SystemExit('target result missing')
+          result=matches[-1]
+          status=(result.get('status') or '').strip().lower()
+          if status not in {'posted','updated'}:
+              raise SystemExit(f"publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
+          post_id=int(result.get('post_id') or 0); post_url=result.get('post_link') or ''
+          if not post_id or not post_url: raise SystemExit('post id/url missing')
+
+          wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          post=wp.request('GET',f'posts/{post_id}',params={'context':'edit'})
+          if post.get('status')!='publish': raise SystemExit(f"unexpected post status: {post.get('status')}")
+          media_id=int(post.get('featured_media') or 0)
+          if not media_id: raise SystemExit('featured media missing')
+          media=wp.request('GET',f'media/{media_id}',params={'context':'edit'})
+          media_source=str(media.get('source_url') or '')
+          if slug not in media_source: raise SystemExit(f'eyecatch mismatch: {media_source}')
+
+          meta=post.get('meta') or {}
+          required=['_cng_answer','_cng_faq','_cng_sources']
+          missing=[k for k in required if not meta.get(k)]
+          if missing: raise SystemExit('GEO metadata missing: '+','.join(missing))
+          faq=json.loads(meta['_cng_faq']) if isinstance(meta['_cng_faq'],str) else meta['_cng_faq']
+          sources=json.loads(meta['_cng_sources']) if isinstance(meta['_cng_sources'],str) else meta['_cng_sources']
+          if len(faq)<2 or len(sources)<1: raise SystemExit('GEO metadata incomplete')
+
+          ledger=Path(os.environ['LEDGER'])
+          with ledger.open(encoding='utf-8-sig',newline='') as f:
+              reader=csv.DictReader(f); fields=reader.fieldnames; data=list(reader)
+          found=False
+          for row in data:
+              if str(row.get('No','')).strip()==no:
+                  row['投稿ステータス']='公開済み'
+                  row['WP投稿ID']=str(post_id)
+                  row['WP投稿URL']=post_url
+                  row['最終更新日時']=dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                  row['エラー内容']=''
+                  found=True
+                  break
+          if not found: raise SystemExit('ledger row missing')
+          with ledger.open('w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields,lineterminator='\n'); w.writeheader(); w.writerows(data)
+
+          Path(os.environ['STATUS_FILE']).write_text(
+              f"state=published\npost_id={post_id}\npost_url={post_url}\nfeatured_media={media_id}\nmedia_source={media_source}\ngeo_faq={len(faq)}\ngeo_sources={len(sources)}\nrun_url=https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n",
+              encoding='utf-8'
+          )
+          print(post_url)
+          PY
+
+      - name: Commit publication artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER" "$IMAGES_DIR/$SLUG.png" "$IMAGES_DIR/$SLUG.png.identity.json" "$STATUS_FILE"
+          git commit -m "Record Daiwa Securities incident publication"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            git pull --rebase origin main
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: daiwa-securities-publication-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 14
