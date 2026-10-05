@@ -1,0 +1,8 @@
+state=published
+post_id=8502
+post_url=https://www.cybernote.click/2026/10/05/daiwa-securities-data-breach-2026/
+featured_media=8501
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/daiwa-securities-data-breach-2026.png
+geo_faq=3
+geo_sources=4
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/37288406557
