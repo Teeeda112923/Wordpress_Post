@@ -73,8 +73,6 @@ jobs:
             --nos "$TARGET_NO" \
             --include-unstarted \
             --mode geo \
-            --fail-on-error
-
       - name: Publish to WordPress
         env:
           WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
