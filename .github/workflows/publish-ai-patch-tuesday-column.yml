@@ -59,7 +59,7 @@ jobs:
           manifest = Path(str(image) + ".identity.json")
           temp_webp = Path("/tmp/why-ai-patch-transfer.webp")
 
-          parts = sorted(transfer_dir.glob("part*.txt"))
+          parts = sorted(transfer_dir.glob("w*.txt"))
           if not parts:
               raise SystemExit("アイキャッチ転送データが見つかりません")
           encoded = "".join(p.read_text(encoding="utf-8").strip() for p in parts)
