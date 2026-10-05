@@ -43,6 +43,27 @@ jobs:
           pip install -r requirements.txt
           mkdir -p "$RESULTS_DIR" "$RESULTS_DIR/no-images"
 
+      - name: Render verified 1200x800 eyecatch
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends librsvg2-bin fonts-noto-cjk
+          SRC="projects/cybernote-security-news/eyecatch-src/why-cyber-incidents-ai-patch-tuesday.svg"
+          DST="$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png"
+          test -s "$SRC"
+          rsvg-convert -w 1200 -h 800 "$SRC" -o "$DST"
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          p = Path("projects/cybernote-security-news/eyecatches/why-cyber-incidents-ai-patch-tuesday.png")
+          if p.read_bytes()[:8] != b"\x89PNG\r\n\x1a\n":
+              raise SystemExit("アイキャッチが正常なPNGではありません")
+          with Image.open(p) as im:
+              if im.size != (1200, 800):
+                  raise SystemExit(f"アイキャッチ寸法エラー: {im.size}")
+              im.verify()
+          print(f"EYECATCH_OK path={p} bytes={p.stat().st_size}")
+          PY
+
       - name: Article quality gate
         run: |
           python article_quality_check.py \
@@ -131,11 +152,11 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$LEDGER"
+          git add "$LEDGER" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png"
           if git diff --cached --quiet; then
             echo "管理簿変更なし"
           else
-            git commit -m "Update CyberNote publish status for AI Patch Tuesday column"
+            git commit -m "Publish AI Patch Tuesday column and verified eyecatch"
             pushed=0
             for attempt in 1 2 3; do
               if git push; then
