@@ -54,23 +54,23 @@ jobs:
           from eyecatch_identity import visual_hash_file, hash_distance, DEFAULT_DISTANCE_LIMIT
 
           images_dir = Path("projects/cybernote-security-news/eyecatches")
-          transfer_dir = images_dir / ".why-ai-patch-transfer"
+          transfer_dir = images_dir / ".why-ai-patch-transfer2"
           image = images_dir / "why-cyber-incidents-ai-patch-tuesday.png"
           manifest = Path(str(image) + ".identity.json")
-          temp_jpg = Path("/tmp/why-ai-patch-transfer.jpg")
+          temp_webp = Path("/tmp/why-ai-patch-transfer.webp")
 
           parts = sorted(transfer_dir.glob("part*.txt"))
           if not parts:
               raise SystemExit("アイキャッチ転送データが見つかりません")
           encoded = "".join(p.read_text(encoding="utf-8").strip() for p in parts)
           payload = base64.b64decode(encoded, validate=True)
-          expected_transfer_sha = "d502c6e567a3e01dfa0eafa3ae17968b4798f37199f134f929d6f793a629c436"
+          expected_transfer_sha = "679d6271e018c873f7991c8ae0453c73803e66a545fc049564c832691939e4a9"
           actual_transfer_sha = hashlib.sha256(payload).hexdigest()
           if actual_transfer_sha != expected_transfer_sha:
-              raise SystemExit(f"転送JPEGのSHA-256不一致: {actual_transfer_sha}")
-          temp_jpg.write_bytes(payload)
+              raise SystemExit(f"転送WebPのSHA-256不一致: {actual_transfer_sha}")
+          temp_webp.write_bytes(payload)
 
-          with Image.open(temp_jpg) as im:
+          with Image.open(temp_webp) as im:
               im.load()
               restored = im.convert("RGB")
           if restored.size != (1200, 800):
@@ -194,9 +194,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          rm -rf "$IMAGES_DIR/.why-ai-patch-transfer"
+          rm -rf "$IMAGES_DIR/.why-ai-patch-transfer" "$IMAGES_DIR/.why-ai-patch-transfer2"
           git add "$LEDGER" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png.identity.json"
-          git add -A "$IMAGES_DIR/.why-ai-patch-transfer"
+          git add -A "$IMAGES_DIR/.why-ai-patch-transfer" "$IMAGES_DIR/.why-ai-patch-transfer2"
           if git diff --cached --quiet; then
             echo "管理簿変更なし"
           else
