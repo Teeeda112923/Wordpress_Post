@@ -43,28 +43,48 @@ jobs:
           pip install -r requirements.txt
           mkdir -p "$RESULTS_DIR"
 
-      - name: Repair eyecatch identity manifest metadata
+      - name: Repair eyecatch PNG and identity manifest
         run: |
           python - <<'PY'
           import hashlib
           import json
           from pathlib import Path
+          from PIL import Image, ImageFile
           from eyecatch_identity import visual_hash_file, hash_distance, DEFAULT_DISTANCE_LIMIT
 
           image = Path("projects/cybernote-security-news/eyecatches/why-cyber-incidents-ai-patch-tuesday.png")
           manifest = Path(str(image) + ".identity.json")
           data = json.loads(manifest.read_text(encoding="utf-8"))
+
+          try:
+              with Image.open(image) as im:
+                  im.load()
+          except OSError as exc:
+              print(f"PNG stream repair required: {exc}")
+              ImageFile.LOAD_TRUNCATED_IMAGES = True
+              with Image.open(image) as im:
+                  im.load()
+                  repaired = im.convert("RGB")
+              repaired.save(image, "PNG", optimize=True)
+              ImageFile.LOAD_TRUNCATED_IMAGES = False
+
           actual_visual = visual_hash_file(image)
           source_visual = str(data.get("source_visual_hash") or "")
           distance = hash_distance(source_visual, actual_visual)
           if distance > DEFAULT_DISTANCE_LIMIT:
-              raise SystemExit(f"生成元とGitHub画像の視覚差が大きすぎます: distance={distance}")
+              raise SystemExit(f"生成元と修復後GitHub画像の視覚差が大きすぎます: distance={distance}")
+
+          with Image.open(image) as im:
+              im.load()
+              if im.format != "PNG" or im.size != (1200, 800):
+                  raise SystemExit(f"修復後画像仕様が不正です: format={im.format} size={im.size}")
+
           data["final_visual_hash"] = actual_visual
           data["final_sha256"] = hashlib.sha256(image.read_bytes()).hexdigest()
           data["width"] = 1200
           data["height"] = 800
           manifest.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-          print(f"identity manifest repaired: distance={distance}, sha256={data['final_sha256'][:12]}…")
+          print(f"PNG/identity repaired: distance={distance}, sha256={data['final_sha256'][:12]}…")
           PY
 
       - name: Eyecatch identity gate
@@ -164,7 +184,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add "$LEDGER" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png.identity.json"
+          git add "$LEDGER" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png" "$IMAGES_DIR/why-cyber-incidents-ai-patch-tuesday.png.identity.json"
           if git diff --cached --quiet; then
             echo "管理簿変更なし"
           else
