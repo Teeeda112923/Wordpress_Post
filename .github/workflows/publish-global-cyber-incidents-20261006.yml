@@ -1,0 +1,216 @@
+name: Publish Global Cyber Incidents 2026-10-06
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-global-cyber-incidents-20261006.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news-fast-publish
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  TARGET_NOS: '163,164,165'
+  STATUS_FILE: .github/global-cyber-incidents-20261006-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+  WP_BLOCK_RETRY_COUNT: '0'
+  WP_SERVER_ERROR_RETRY_COUNT: '0'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies and Japanese font
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          sudo apt-get update -y
+          sudo apt-get install -y fonts-noto-cjk
+          mkdir -p "$RESULTS_DIR" "$IMAGES_DIR"
+
+      - name: Normalize and bind supplied generated eyecatches
+        run: |
+          for slug in             denmark-cpr-data-breach-8-8-million-2026             south-korea-bank-cyberattacks-ai-2026             fbi-jobs-data-breach-peoplesoft-2026
+          do
+            test -s "$IMAGES_DIR/$slug.png"
+            cp "$IMAGES_DIR/$slug.png" "/tmp/$slug-source.png"
+            python prepare_eyecatch.py "/tmp/$slug-source.png" "$IMAGES_DIR/$slug.png"
+          done
+          python verify_eyecatch_identity.py             --ledger "$LEDGER"             --images-dir "$IMAGES_DIR"             --nos "$TARGET_NOS"             --require-from-no 147
+
+      - name: Run regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
+      - name: Article quality gate
+        run: |
+          python article_quality_check.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --results "$RESULTS_DIR/article_quality_results.csv"             --nos "$TARGET_NOS"             --include-unstarted             --mode geo             --fail-on-error
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py             --input "$LEDGER"             --articles-dir "$ARTICLES_DIR"             --images-dir "$IMAGES_DIR"             --post-status publish             --write-mode upsert             --category "サイバーセキュリティ"             --nos "$TARGET_NOS"             --limit 3             --skip-auth-check             --skip-internal-link-resolution             --fallback-media-id "$FALLBACK_MEDIA_ID"             --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python - <<'PY'
+          import csv, datetime as dt, json, os
+          from pathlib import Path
+          from wp_auto_post import WordPressClient
+
+          targets = {
+              '163': 'denmark-cpr-data-breach-8-8-million-2026',
+              '164': 'south-korea-bank-cyberattacks-ai-2026',
+              '165': 'fbi-jobs-data-breach-peoplesoft-2026',
+          }
+          files = sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          if not files:
+              raise SystemExit('result CSV missing')
+          with files[-1].open(encoding='utf-8-sig', newline='') as f:
+              results = list(csv.DictReader(f))
+
+          wp = WordPressClient(
+              os.environ['WP_BASE_URL'],
+              os.environ['WP_USERNAME'],
+              os.environ['WP_APP_PASSWORD'],
+          )
+          published = {}
+          for no, slug in targets.items():
+              matches = [r for r in results if str(r.get('no', '')).strip() == no]
+              if not matches:
+                  raise SystemExit(f'target result missing: {no}')
+              result = matches[-1]
+              status = (result.get('status') or '').strip().lower()
+              if status not in {'posted', 'updated'}:
+                  raise SystemExit(
+                      f"publication failed {no}: {status}: "
+                      f"{result.get('error_content') or result.get('message') or ''}"
+                  )
+              post_id = int(result.get('post_id') or 0)
+              post_url = result.get('post_link') or ''
+              if not post_id or not post_url:
+                  raise SystemExit(f'post id/url missing: {no}')
+
+              post = wp.request('GET', f'posts/{post_id}', params={'context': 'edit'})
+              if post.get('status') != 'publish':
+                  raise SystemExit(f"unexpected post status {no}: {post.get('status')}")
+              media_id = int(post.get('featured_media') or 0)
+              if not media_id:
+                  raise SystemExit(f'featured media missing: {no}')
+              media = wp.request('GET', f'media/{media_id}', params={'context': 'edit'})
+              media_source = str(media.get('source_url') or '')
+              if slug not in media_source:
+                  raise SystemExit(f'eyecatch mismatch {no}: {media_source}')
+
+              meta = post.get('meta') or {}
+              required = ['_cng_answer', '_cng_faq', '_cng_sources']
+              missing = [k for k in required if not meta.get(k)]
+              if missing:
+                  raise SystemExit(f"GEO metadata missing {no}: {','.join(missing)}")
+              faq = json.loads(meta['_cng_faq']) if isinstance(meta['_cng_faq'], str) else meta['_cng_faq']
+              sources = json.loads(meta['_cng_sources']) if isinstance(meta['_cng_sources'], str) else meta['_cng_sources']
+              if len(faq) < 2 or len(sources) < 1:
+                  raise SystemExit(f'GEO metadata incomplete: {no}')
+              published[no] = {
+                  'post_id': post_id,
+                  'post_url': post_url,
+                  'media_id': media_id,
+                  'media_source': media_source,
+                  'faq': len(faq),
+                  'sources': len(sources),
+              }
+
+          ledger = Path(os.environ['LEDGER'])
+          with ledger.open(encoding='utf-8-sig', newline='') as f:
+              reader = csv.DictReader(f)
+              fields = reader.fieldnames
+              data = list(reader)
+          now = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+          for row in data:
+              no = str(row.get('No', '')).strip()
+              if no in published:
+                  item = published[no]
+                  row['投稿ステータス'] = '公開済み'
+                  row['WP投稿ID'] = str(item['post_id'])
+                  row['WP投稿URL'] = item['post_url']
+                  row['最終更新日時'] = now
+                  row['エラー内容'] = ''
+          with ledger.open('w', encoding='utf-8-sig', newline='') as f:
+              w = csv.DictWriter(f, fieldnames=fields, lineterminator='\n')
+              w.writeheader()
+              w.writerows(data)
+
+          status_lines = ['state=published']
+          for no, item in published.items():
+              status_lines.extend([
+                  f"{no}_post_id={item['post_id']}",
+                  f"{no}_post_url={item['post_url']}",
+                  f"{no}_featured_media={item['media_id']}",
+                  f"{no}_media_source={item['media_source']}",
+                  f"{no}_geo_faq={item['faq']}",
+                  f"{no}_geo_sources={item['sources']}",
+              ])
+          status_lines.append(
+              f"run_url=https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}"
+          )
+          Path(os.environ['STATUS_FILE']).write_text(
+              '\n'.join(status_lines) + '\n',
+              encoding='utf-8',
+          )
+          for item in published.values():
+              print(item['post_url'])
+          PY
+
+      - name: Commit publication artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add             "$LEDGER"             "$IMAGES_DIR/denmark-cpr-data-breach-8-8-million-2026.png"             "$IMAGES_DIR/denmark-cpr-data-breach-8-8-million-2026.png.identity.json"             "$IMAGES_DIR/south-korea-bank-cyberattacks-ai-2026.png"             "$IMAGES_DIR/south-korea-bank-cyberattacks-ai-2026.png.identity.json"             "$IMAGES_DIR/fbi-jobs-data-breach-peoplesoft-2026.png"             "$IMAGES_DIR/fbi-jobs-data-breach-peoplesoft-2026.png.identity.json"             "$STATUS_FILE"
+          git commit -m "Record global cyber incident publications"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            git pull --rebase origin main
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: global-cyber-incidents-20261006-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 14

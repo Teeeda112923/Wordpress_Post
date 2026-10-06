@@ -17,6 +17,7 @@ PRIMARY_DOMAINS = {
     "jvn.jp", "ipa.go.jp", "jpcert.or.jp", "nisc.go.jp", "npa.go.jp",
     "soumu.go.jp", "mhlw.go.jp", "meti.go.jp", "ppc.go.jp", "nvd.nist.gov", "nist.gov",
     "cisa.gov", "fbi.gov", "cve.org", "mitre.org", "first.org", "kb.cert.org",
+    "ufm.dk", "cpr.dk", "datatilsynet.dk", "fsc.go.kr", "oracle.com",
     # 開発元・ベンダーの公式アドバイザリ/リリース情報
     "microsoft.com", "googleblog.com", "google.com", "cisco.com", "wordpress.org",
     "apache.org", "openjsf.org", "mitsubishielectric.com", "n-able.com",
