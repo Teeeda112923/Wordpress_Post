@@ -364,11 +364,17 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
     core_count = chars(body)
-    # User-approved, single-article exception: preserve the full AWS/NATO explainer.
+    # User-approved, single-article exceptions: preserve specifically approved long-form explainers.
     # All structural, sourcing and image quality rules stay enforced.
     approved_longform = (
-        "# AWSはNATOから何を承認されたのか？NATO RESTRICTEDとD32をわかりやすく解説" in body.splitlines()
-        and "https://www.aboutamazon.com/news/aws/aws-first-cloud-provider-nato-restricted-workloads" in front
+        (
+            "# AWSはNATOから何を承認されたのか？NATO RESTRICTEDとD32をわかりやすく解説" in body.splitlines()
+            and "https://www.aboutamazon.com/news/aws/aws-first-cloud-provider-nato-restricted-workloads" in front
+        )
+        or (
+            "# AIがサイバー攻撃を自律化する時代へ｜GLM-5.3・Claude CodeとN-day攻撃の脅威" in body.splitlines()
+            and "https://www.nist.gov/news-events/news/2026/09/caisis-assessment-zais-glm-53-cyber-capabilities" in front
+        )
     )
     if core_count < CORE_HARD_MIN:
         errors.append(f"本文コアが絶対最低値{CORE_HARD_MIN}字未満です（{core_count}字）")
