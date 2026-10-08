@@ -24,7 +24,7 @@ env:
   STATUS_FILE: .github/idcf-ransomware-publication-status.txt
   PYTHONUNBUFFERED: '1'
   WP_BLOCK_RETRY_COUNT: '1'
-  WP_SERVER_ERROR_RETRY_COUNT: '1'
+  WP_SERVER_ERROR_RETRY_COUNT: '2'
 
 jobs:
   publish:
@@ -47,6 +47,7 @@ jobs:
           pip install -r requirements.txt PyYAML
           mkdir -p "$RESULTS_DIR"
 
+      # Retry publication with a truecolor RGB PNG for WordPress media compatibility.
       - name: Verify selected eyecatch identity
         run: |
           python verify_eyecatch_identity.py \
