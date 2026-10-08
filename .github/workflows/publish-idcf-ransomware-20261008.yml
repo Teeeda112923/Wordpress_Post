@@ -1,0 +1,197 @@
+name: Publish IDCF Ransomware Incident
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/publish-idcf-ransomware-20261008.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news-fast-publish
+  cancel-in-progress: false
+
+env:
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  TARGET_NO: '169'
+  SLUG: idc-frontier-idcf-cloud-ransomware-2026
+  STATUS_FILE: .github/idcf-ransomware-publication-status.txt
+  PYTHONUNBUFFERED: '1'
+  WP_BLOCK_RETRY_COUNT: '1'
+  WP_SERVER_ERROR_RETRY_COUNT: '1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          mkdir -p "$RESULTS_DIR"
+
+      - name: Verify selected eyecatch identity
+        run: |
+          python verify_eyecatch_identity.py \
+            --ledger "$LEDGER" \
+            --images-dir "$IMAGES_DIR" \
+            --nos "$TARGET_NO" \
+            --require-from-no 147
+
+      - name: Verify long-form article metadata
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re, yaml, os
+          p=Path(os.environ['ARTICLES_DIR'])/(os.environ['SLUG']+'.md')
+          text=p.read_text(encoding='utf-8')
+          m=re.match(r'^---\s*\n(.*?)\n---\s*\n(.*)$',text,re.S)
+          if not m:
+              raise SystemExit('front matter missing')
+          meta=yaml.safe_load(m.group(1)) or {}
+          body=m.group(2)
+          if not str(meta.get('answer') or '').strip().endswith('。'):
+              raise SystemExit('answer missing')
+          if len(meta.get('faq') or []) < 2:
+              raise SystemExit('faq incomplete')
+          if len(meta.get('sources') or []) < 1:
+              raise SystemExit('sources incomplete')
+          if '## まとめ' not in body:
+              raise SystemExit('summary section missing')
+          print('Long-form article accepted by explicit user instruction; standard 1,800-char ceiling intentionally bypassed.')
+          PY
+
+      - name: Run regression tests
+        run: python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*.py'
+
+      - name: Publish to WordPress
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "$TARGET_NO" \
+            --limit 1 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --fallback-media-id "$FALLBACK_MEDIA_ID" \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify publication and update ledger
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python - <<'PY'
+          import csv, datetime as dt, json, os
+          from pathlib import Path
+          from wp_auto_post import WordPressClient
+
+          no=os.environ['TARGET_NO']; slug=os.environ['SLUG']
+          files=sorted(Path(os.environ['RESULTS_DIR']).glob('results_*.csv'))
+          if not files: raise SystemExit('result CSV missing')
+          with files[-1].open(encoding='utf-8-sig',newline='') as f:
+              rows=list(csv.DictReader(f))
+          matches=[r for r in rows if str(r.get('no','')).strip()==no]
+          if not matches: raise SystemExit('target result missing')
+          result=matches[-1]
+          status=(result.get('status') or '').strip().lower()
+          if status not in {'posted','updated'}:
+              raise SystemExit(f"publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
+          post_id=int(result.get('post_id') or 0); post_url=result.get('post_link') or ''
+          if not post_id or not post_url: raise SystemExit('post id/url missing')
+
+          wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          post=wp.request('GET',f'posts/{post_id}',params={'context':'edit'})
+          if post.get('status')!='publish': raise SystemExit(f"unexpected post status: {post.get('status')}")
+          media_id=int(post.get('featured_media') or 0)
+          if not media_id: raise SystemExit('featured media missing')
+          media=wp.request('GET',f'media/{media_id}',params={'context':'edit'})
+          media_source=str(media.get('source_url') or '')
+          if slug not in media_source:
+              raise SystemExit(f'eyecatch mismatch: {media_source}')
+
+          meta=post.get('meta') or {}
+          required=['_cng_answer','_cng_faq','_cng_sources']
+          missing=[k for k in required if not meta.get(k)]
+          if missing: raise SystemExit('GEO metadata missing: '+','.join(missing))
+          faq=json.loads(meta['_cng_faq']) if isinstance(meta['_cng_faq'],str) else meta['_cng_faq']
+          sources=json.loads(meta['_cng_sources']) if isinstance(meta['_cng_sources'],str) else meta['_cng_sources']
+          if len(faq)<2 or len(sources)<1: raise SystemExit('GEO metadata incomplete')
+
+          ledger=Path(os.environ['LEDGER'])
+          with ledger.open(encoding='utf-8-sig',newline='') as f:
+              reader=csv.DictReader(f); fields=reader.fieldnames; data=list(reader)
+          found=False
+          for row in data:
+              if str(row.get('No','')).strip()==no:
+                  row['投稿ステータス']='公開済み'
+                  row['WP投稿ID']=str(post_id)
+                  row['WP投稿URL']=post_url
+                  row['最終更新日時']=dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                  row['エラー内容']=''
+                  found=True
+                  break
+          if not found: raise SystemExit('ledger row missing')
+          with ledger.open('w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields,lineterminator='\n'); w.writeheader(); w.writerows(data)
+
+          Path(os.environ['STATUS_FILE']).write_text(
+              f"state=published\npost_id={post_id}\npost_url={post_url}\nfeatured_media={media_id}\nmedia_source={media_source}\ngeo_faq={len(faq)}\ngeo_sources={len(sources)}\nrun_url=https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}\n",
+              encoding='utf-8'
+          )
+          print(post_url)
+          PY
+
+      - name: Commit publication artifacts
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$LEDGER" "$STATUS_FILE"
+          git commit -m "Record IDCF ransomware incident publication" || exit 0
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then exit 0; fi
+            git pull --rebase origin main
+            sleep $((attempt * 3))
+          done
+          exit 1
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idcf-ransomware-publication-results
+          path: |
+            ${{ env.RESULTS_DIR }}/*.csv
+          if-no-files-found: warn
+          retention-days: 14
