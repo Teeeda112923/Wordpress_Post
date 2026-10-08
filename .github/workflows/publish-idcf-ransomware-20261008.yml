@@ -1,4 +1,5 @@
 name: Publish IDCF Ransomware Incident
+# Inspect cache purge trigger: 2026-10-09 00:20 JST
 # Diagnose public page trigger: 2026-10-09 00:10 JST
 # Manual publish trigger: 2026-10-09 00:07 JST
 
@@ -206,6 +207,46 @@ jobs:
               for h in ['cf-cache-status','x-cache','x-litespeed-cache','x-proxy-cache','cache-control','age','server']:
                   if resp.headers.get(h) is not None:
                       print(label.upper()+'_HEADER_'+h+'=',resp.headers.get(h))
+          PY
+
+      - name: Inspect cache purge capabilities
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import base64, os, requests
+          base=os.environ['WP_BASE_URL'].rstrip('/')
+          user=os.environ['WP_USERNAME']; pw=os.environ['WP_APP_PASSWORD'].replace(' ','')
+          token=base64.b64encode(f'{user}:{pw}'.encode()).decode()
+          headers={'Authorization':'Basic '+token,'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache'}
+          root=requests.get(base+'/wp-json/',headers=headers,timeout=60)
+          print('REST_INDEX_STATUS=',root.status_code)
+          try:
+              data=root.json()
+              routes=data.get('routes') or {}
+              hits=[]
+              for route, spec in routes.items():
+                  low=route.lower()
+                  if any(k in low for k in ['cache','purge','litespeed','cloudflare']):
+                      methods=[]
+                      for ep in spec.get('endpoints',[]) if isinstance(spec,dict) else []:
+                          methods += list(ep.get('methods') or [])
+                      hits.append((route,sorted(set(methods))))
+              print('CACHE_ROUTES=',hits[:100])
+          except Exception as e:
+              print('REST_INDEX_PARSE_ERROR=',type(e).__name__,str(e)[:200])
+          url=base+'/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/'
+          for method in ['PURGE']:
+              try:
+                  resp=requests.request(method,url,headers=headers,timeout=60)
+                  print(method+'_STATUS=',resp.status_code)
+                  print(method+'_BODY=',resp.text[:300].replace('\n',' '))
+                  for h in ['cf-cache-status','x-litespeed-cache','server']:
+                      if resp.headers.get(h): print(method+'_HEADER_'+h+'=',resp.headers.get(h))
+              except Exception as e:
+                  print(method+'_ERROR=',type(e).__name__,str(e)[:200])
           PY
 
       - name: Commit publication artifacts
