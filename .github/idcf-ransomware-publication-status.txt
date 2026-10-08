@@ -5,4 +5,4 @@ featured_media=8543
 media_source=https://www.cybernote.click/wp-content/uploads/2026/10/idc-frontier-idcf-cloud-ransomware-2026-2.png
 geo_faq=3
 geo_sources=3
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/37798192207
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/37805511146
