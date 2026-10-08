@@ -102,7 +102,7 @@ def prepare():
         raise RuntimeError("記事のYAMLフロントマターが不足しています")
     if article.count("PIXEL_CASE1_IMAGE_URL") != 1 or article.count("PIXEL_CASE2_IMAGE_URL") != 1:
         raise RuntimeError("記事の実例画像プレースホルダが不足・重複しています")
-    if len(re.findall(r"https://www\\.cybernote\\.click/", article)) < 3:
+    if len(re.findall(r"https://www\.cybernote\.click/", article)) < 3:
         raise RuntimeError("記事のCyberNote内部リンクが3本未満です")
     # Avoid YAML string escaping problems: use json.dumps for double-quoted strings.
     import json
