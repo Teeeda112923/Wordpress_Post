@@ -1,4 +1,5 @@
 name: Publish IDCF Ransomware Incident
+# Purge stale IDCF caches trigger: 2026-10-09 00:30 JST
 # Inspect cache purge trigger: 2026-10-09 00:20 JST
 # Diagnose public page trigger: 2026-10-09 00:10 JST
 # Manual publish trigger: 2026-10-09 00:07 JST
@@ -247,6 +248,70 @@ jobs:
                       if resp.headers.get(h): print(method+'_HEADER_'+h+'=',resp.headers.get(h))
               except Exception as e:
                   print(method+'_ERROR=',type(e).__name__,str(e)[:200])
+          PY
+
+      - name: Purge IDCF page caches
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+        run: |
+          python - <<'PY'
+          import base64, os, re, requests, time
+          base=os.environ['WP_BASE_URL'].rstrip('/')
+          url=base+'/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/'
+          token=base64.b64encode((os.environ['WP_USERNAME']+':'+os.environ['WP_APP_PASSWORD'].replace(' ','')).encode()).decode()
+          h={'Authorization':'Basic '+token,'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache'}
+          endpoints=[
+            ('jetpack_site_cache',base+'/wp-json/jetpack/v4/site/cache/flush'),
+            ('jetpack_boost_page_cache',base+'/wp-json/jetpack-boost-ds/page-cache/action/clear-page-cache'),
+          ]
+          for name,ep in endpoints:
+              try:
+                  r=requests.post(ep,headers=h,json={},timeout=60)
+                  print(name+'_STATUS=',r.status_code)
+                  print(name+'_BODY=',r.text[:240].replace('\n',' '))
+              except Exception as e:
+                  print(name+'_ERROR=',type(e).__name__,str(e)[:200])
+
+          cf_token=os.environ.get('CLOUDFLARE_API_TOKEN') or os.environ.get('CF_API_TOKEN') or ''
+          cf_zone=os.environ.get('CLOUDFLARE_ZONE_ID') or os.environ.get('CF_ZONE_ID') or ''
+          print('CF_TOKEN_AVAILABLE=',bool(cf_token))
+          print('CF_ZONE_AVAILABLE=',bool(cf_zone))
+          if cf_token and cf_zone:
+              try:
+                  r=requests.post(
+                    f'https://api.cloudflare.com/client/v4/zones/{cf_zone}/purge_cache',
+                    headers={'Authorization':'Bearer '+cf_token,'Content-Type':'application/json'},
+                    json={'files':[url]},
+                    timeout=60,
+                  )
+                  data={}
+                  try: data=r.json()
+                  except Exception: pass
+                  print('CLOUDFLARE_PURGE_STATUS=',r.status_code)
+                  print('CLOUDFLARE_PURGE_SUCCESS=',data.get('success'))
+                  if not (r.ok and data.get('success') is True):
+                      print('CLOUDFLARE_PURGE_ERRORS=',data.get('errors'))
+              except Exception as e:
+                  print('CLOUDFLARE_PURGE_ERROR=',type(e).__name__,str(e)[:200])
+
+          time.sleep(3)
+          r=requests.get(url,headers={'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache','Pragma':'no-cache'},timeout=60)
+          mt=re.search(r'<title[^>]*>(.*?)</title>',r.text,re.I|re.S)
+          title=re.sub(r'<[^>]+>','',mt.group(1)).strip() if mt else ''
+          print('AFTER_PURGE_STATUS=',r.status_code)
+          print('AFTER_PURGE_TITLE=',title)
+          print('AFTER_PURGE_HAS_THIRD_REPORT=', '第3報' in r.text)
+          print('AFTER_PURGE_CF=',r.headers.get('cf-cache-status'))
+          print('AFTER_PURGE_LITESPEED=',r.headers.get('x-litespeed-cache'))
+          print('AFTER_PURGE_AGE=',r.headers.get('age'))
+          if not title.startswith('【続報】'):
+              raise SystemExit('通常URLがまだ旧キャッシュです')
           PY
 
       - name: Commit publication artifacts
