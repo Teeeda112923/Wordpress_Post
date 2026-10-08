@@ -1,4 +1,5 @@
 name: Publish IDCF Ransomware Incident
+# Manual publish trigger: 2026-10-09 00:07 JST
 
 on:
   push:
