@@ -1,4 +1,5 @@
 name: Publish IDCF Ransomware Incident
+# Diagnose public page trigger: 2026-10-09 00:10 JST
 # Manual publish trigger: 2026-10-09 00:07 JST
 
 on:
@@ -173,6 +174,38 @@ jobs:
               encoding='utf-8'
           )
           print(post_url)
+          PY
+
+      - name: Diagnose public page state
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import os, re, time, requests
+          from wp_auto_post import WordPressClient
+          wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          post=wp.request('GET','posts/8544',params={'context':'edit'})
+          title=((post.get('title') or {}).get('raw') or (post.get('title') or {}).get('rendered') or '')
+          raw=((post.get('content') or {}).get('raw') or '')
+          print('REST_TITLE=', title)
+          print('REST_HAS_TESLA=', 'tesla' in raw.lower())
+          print('REST_HAS_THIRD_REPORT=', '第3報' in raw)
+          url=post.get('link') or 'https://www.cybernote.click/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/'
+          sess=requests.Session()
+          headers={'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache','Pragma':'no-cache'}
+          for label,u in [('public',url),('bust',url+('?cb='+str(int(time.time()))))]:
+              resp=sess.get(u,headers=headers,timeout=60)
+              html=resp.text
+              mt=re.search(r'<title[^>]*>(.*?)</title>',html,re.I|re.S)
+              print(label.upper()+'_STATUS=',resp.status_code)
+              print(label.upper()+'_TITLE=',re.sub(r'<[^>]+>','',mt.group(1)).strip() if mt else '')
+              print(label.upper()+'_HAS_TESLA=', 'tesla' in html.lower())
+              print(label.upper()+'_HAS_THIRD_REPORT=', '第3報' in html)
+              for h in ['cf-cache-status','x-cache','x-litespeed-cache','x-proxy-cache','cache-control','age','server']:
+                  if resp.headers.get(h) is not None:
+                      print(label.upper()+'_HEADER_'+h+'=',resp.headers.get(h))
           PY
 
       - name: Commit publication artifacts
