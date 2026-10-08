@@ -1,0 +1,123 @@
+name: Publish Pixel Call Screening Column
+
+# Upload the exact, previously verified ZIP into the uploads folder on main.
+# The push automatically publishes this one article with all 3 original images.
+# A manual retry is also supported. No generic image fallback is permitted.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'projects/cybernote-security-news/uploads/pixel-call-screening-cybernote-package.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news
+  cancel-in-progress: false
+
+env:
+  PYTHONUNBUFFERED: '1'
+  LEDGER: projects/cybernote-security-news/data/news_ledger.csv
+  ARTICLES_DIR: projects/cybernote-security-news/articles
+  IMAGES_DIR: projects/cybernote-security-news/eyecatches
+  RESULTS_DIR: projects/cybernote-security-news/results
+  WORK_DIR: projects/cybernote-security-news/results/pixel-column-bundle
+
+jobs:
+  publish:
+    name: Publish article, eyecatch and two actual screenshots
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+
+      - name: Verify and unpack user-selected images
+        run: |
+          python -m py_compile projects/cybernote-security-news/src/publish_pixel_column_bundle.py
+          python projects/cybernote-security-news/src/publish_pixel_column_bundle.py prepare
+
+      - name: Verify the generated eyecatch identity
+        run: |
+          python verify_eyecatch_identity.py \
+            --ledger "$LEDGER" \
+            --images-dir "$IMAGES_DIR" \
+            --nos "$(cat "$WORK_DIR/target_no.txt")" \
+            --require-from-no 147
+
+      - name: Upload verified case screenshots and embed their actual media URLs
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+        run: |
+          python projects/cybernote-security-news/src/publish_pixel_column_bundle.py embed
+
+      - name: Publish to CyberNote
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_FALLBACK_MEDIA_ID: ''
+        run: |
+          python wp_auto_post.py \
+            --input "$LEDGER" \
+            --articles-dir "$ARTICLES_DIR" \
+            --images-dir "$IMAGES_DIR" \
+            --post-status publish \
+            --write-mode upsert \
+            --category "サイバーセキュリティ" \
+            --nos "$(cat "$WORK_DIR/target_no.txt")" \
+            --limit 1 \
+            --sleep 0 \
+            --skip-auth-check \
+            --skip-internal-link-resolution \
+            --output-dir "$RESULTS_DIR"
+
+      - name: Verify successful publication and record permalink
+        run: |
+          python projects/cybernote-security-news/src/publish_pixel_column_bundle.py finalize
+
+      - name: Commit published article, images, and registry
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            "$LEDGER" \
+            "$ARTICLES_DIR/pixel-call-screening-scam-call-2026.md" \
+            "$IMAGES_DIR/pixel-call-screening-scam-call-2026.png" \
+            "$IMAGES_DIR/pixel-call-screening-scam-call-2026.identity.json" \
+            projects/cybernote-security-news/media/pixel-call-screening-case1.png \
+            projects/cybernote-security-news/media/pixel-call-screening-case2.png
+          if git diff --cached --quiet; then
+            echo "変更なし。公開済み記事を確認しました。"
+            exit 0
+          fi
+          git commit -m "Publish verified Pixel call screening column"
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "記事、正しい画像と公開URLをGitHubに保存しました。"
+              exit 0
+            fi
+            git pull --rebase origin main
+            sleep $((attempt * 5))
+          done
+          echo "::error::WordPressへの投稿は成功しましたが、GitHub管理簿のpushに失敗しました。"
+          exit 1
