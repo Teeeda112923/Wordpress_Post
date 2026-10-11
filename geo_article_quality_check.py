@@ -379,6 +379,10 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             "# JPCERT/CC注意喚起｜国内で相次ぐ不正アクセスの手口と不審なIPアドレス15件" in body.splitlines()
             and "https://www.jpcert.or.jp/at/2026/at260030.html" in front
         )
+        or (
+            "# 日本など7か国が国際アドバイザリーに共同署名、中国政府関連とされる攻撃者の手口と対策" in body.splitlines()
+            and "https://www.cyber.go.jp/pdf/news/20261009advisory.pdf" in front
+        )
     )
     if core_count < CORE_HARD_MIN:
         errors.append(f"本文コアが絶対最低値{CORE_HARD_MIN}字未満です（{core_count}字）")
