@@ -1,5 +1,6 @@
 name: Publish Critical Infrastructure Anzenkijun Guideline
 # User-approved article (2026-10-13). Push of this file publishes No.184.
+# 2026-10-13: eyecatch replaced with user-supplied image (upsert re-uploads on mismatch).
 
 on:
   push:
