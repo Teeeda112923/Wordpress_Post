@@ -1,0 +1,144 @@
+name: Update IDCF Article - Zenlogic Maintenance Extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/update-idcf-zenlogic-20261013.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update-live-post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install requests
+        run: python -m pip install requests
+
+      - name: Patch existing WordPress article without replacing its full body
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+        run: |
+          python - <<'PY'
+          import os, re, time, requests
+          base=os.environ['WP_BASE_URL'].rstrip('/')
+          auth=(os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'].replace(' ',''))
+          api=base+'/wp-json/wp/v2/posts/8544'
+          s=requests.Session()
+          s.headers.update({'User-Agent':'CyberNote-IDCF-Update/1.0','Cache-Control':'no-cache'})
+          r=s.get(api,params={'context':'edit'},auth=auth,timeout=60)
+          r.raise_for_status()
+          post=r.json()
+          content=(post.get('content') or {}).get('raw') or ''
+          if not content:
+              raise SystemExit('WordPress raw content is empty; refusing to overwrite the post.')
+          title='【続報】IDCフロンティアのサイバー攻撃まとめ｜復旧状況と影響企業一覧【10月13日更新】'
+          excerpt='IDCフロンティアのランサムウェア事案を解説。JR九州Web会員のメールアドレス最大約130万件の漏えい可能性に加え、Zenlogicカスタマーポータルのメンテナンス完了予定が10月20日17時まで延長されたことを整理。'
+
+          # Keep the existing article body and patch only the Zenlogic section.
+          pattern=re.compile(r'(?is)(<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2[^>]*>Zenlogicへの影響について</h2>\s*<!-- /wp:heading -->).*?(?=<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2)')
+          replacement='''<!-- wp:heading {"level":2} -->
+          <h2 class="wp-block-heading">Zenlogicへの影響について</h2>
+          <!-- /wp:heading -->
+          <!-- wp:paragraph -->
+          <p>IDCフロンティアは2026年10月9日、レンタルサーバーサービス「Zenlogic」への影響について公式案内を公表しました。同社によると、発表時点でZenlogicサービスに対する不正アクセスは確認されておらず、稼働やシステムへの影響も生じていないとしています。</p>
+          <!-- /wp:paragraph -->
+          <!-- wp:paragraph -->
+          <p>その後、Zenlogicカスタマーポータルの緊急メンテナンス案内が2026年10月13日18時に更新され、メンテナンス完了予定が10月20日17時まで再延長されました。対象はカスタマーポータルの一部サービスです。メンテナンス中は新規ホスティング申し込み、リソースプラン変更、リソースブースター、ディスク追加、Zenlogic管理ドメイン名のネームサーバー情報変更や各種手続き、ドメイン名の移転申し込みなどができません。</p>
+          <!-- /wp:paragraph -->
+          <!-- wp:paragraph -->
+          <p>公式案内では、独自ドメイン名でのWeb公開、メール送受信、FTPによるファイル操作には影響しないとされています。この期限延長は手続き制限の継続を示すもので、Zenlogicで不正アクセス被害が確認されたことや、IDCFクラウド本体の復旧状況が変わったことを意味しません。<a href="https://www.idcf.jp/rentalserver/maintenance/2026/20261007-1/">IDCフロンティア公式メンテナンス案内</a>も確認してください。</p>
+          <!-- /wp:paragraph -->'''
+          m=pattern.search(content)
+          if not m:
+              raise SystemExit('Could not safely locate the existing Zenlogic section; no WordPress changes made.')
+          content=pattern.sub(replacement,content,count=1)
+
+          # Update the visible freshness date without altering the permalink.
+          content=content.replace('IDCフロンティアのサイバー攻撃まとめ｜復旧状況と影響企業一覧【10月11日更新】',
+                                  'IDCフロンティアのサイバー攻撃まとめ｜復旧状況と影響企業一覧【10月13日更新】')
+          content=content.replace('最終更新: 2026年10月11日','最終更新: 2026年10月13日')
+          content=content.replace('10月11日時点  | 第5報なし','10月13日時点  | 第5報なし')
+          content=content.replace('10月11日時点で第5報は公表されておらず','10月13日時点で第5報は公表されておらず')
+
+          # Add an FAQ immediately before the existing sources heading.
+          faq='''<!-- wp:heading {"level":3} -->
+          <h3 class="wp-block-heading">Zenlogicのメンテナンスはいつまでですか？</h3>
+          <!-- /wp:heading -->
+          <!-- wp:paragraph -->
+          <p>IDCフロンティアの公式案内は2026年10月13日18時に更新され、カスタマーポータルのメンテナンス完了予定は10月20日17時まで再延長されました。Web公開、メール送受信、FTP操作には影響しないと案内されています。これは手続き制限に関する情報で、Zenlogicへの不正アクセスが確認されたことを意味しません。</p>
+          <!-- /wp:paragraph -->
+          '''
+          source_heading=re.compile(r'(?is)(<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2[^>]*>参考・出典</h2>)')
+          if 'Zenlogicのメンテナンスはいつまでですか？' not in content:
+              if not source_heading.search(content):
+                  raise SystemExit('Could not locate the source heading for FAQ insertion.')
+              content=source_heading.sub(faq+r'\1',content,count=1)
+
+          # Add the official maintenance source to the references section if it is not already there.
+          if 'https://www.idcf.jp/rentalserver/maintenance/2026/20261007-1/' not in content:
+              source_line='''<!-- wp:list-item -->
+          <li><a href="https://www.idcf.jp/rentalserver/maintenance/2026/20261007-1/">Zenlogicカスタマーポータルの緊急メンテナンス案内（2026年10月13日更新）</a> — IDCフロンティア</li>
+          <!-- /wp:list-item -->'''
+              refs=re.compile(r'(?is)(<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2[^>]*>参考・出典</h2>.*?<!-- wp:list -->)(.*?)(<!-- /wp:list -->)')
+              mr=refs.search(content)
+              if mr:
+                  content=content[:mr.start(3)]+source_line+'\n'+content[mr.start(3):]
+
+          # Add a visible update-history entry without deleting previous history.
+          content=content.replace('2026年10月10日：Zenlogicへの影響に関する公式案内を追記。',
+                                  '2026年10月13日：Zenlogicカスタマーポータルのメンテナンス完了予定が10月20日17時まで再延長されたことを追記。<br>2026年10月10日：Zenlogicへの影響に関する公式案内を追記。')
+
+          u=s.post(api,auth=auth,json={'title':title,'excerpt':excerpt,'content':content,'status':'publish'},timeout=60)
+          if not u.ok:
+              raise SystemExit(f'WordPress update failed: {u.status_code} {u.text[:500]}')
+          print('WP_UPDATED_POST_ID=',u.json().get('id'))
+          print('WP_UPDATED_TITLE=',(u.json().get('title') or {}).get('raw') or (u.json().get('title') or {}).get('rendered'))
+          print('WP_CONTENT_HAS_DEADLINE=', '10月20日17時' in content)
+          print('WP_CONTENT_HAS_FAQ=', 'Zenlogicのメンテナンスはいつまでですか？' in content)
+
+          # Attempt supported cache purges where credentials/plugins are available.
+          for ep in ['/wp-json/jetpack/v4/site/cache/flush','/wp-json/jetpack-boost-ds/page-cache/action/clear-page-cache']:
+              try:
+                  pr=s.post(base+ep,auth=auth,json={},timeout=30)
+                  print('CACHE_PURGE',ep,pr.status_code,pr.text[:160].replace('\n',' '))
+              except Exception as e:
+                  print('CACHE_PURGE_ERROR',ep,type(e).__name__,str(e)[:160])
+          token=os.environ.get('CLOUDFLARE_API_TOKEN','')
+          zone=os.environ.get('CLOUDFLARE_ZONE_ID','')
+          if token and zone:
+              pr=s.post(f'https://api.cloudflare.com/client/v4/zones/{zone}/purge_cache',
+                        headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+                        json={'files':[base+'/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/']},timeout=30)
+              print('CF_PURGE=',pr.status_code,pr.text[:200].replace('\n',' '))
+          time.sleep(3)
+          public=s.get(base+'/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/',
+                       headers={'Cache-Control':'no-cache','Pragma':'no-cache'},timeout=60)
+          public.raise_for_status()
+          html=public.text
+          tm=re.search(r'<title[^>]*>(.*?)</title>',html,re.I|re.S)
+          page_title=re.sub(r'<[^>]+>','',tm.group(1)).strip() if tm else ''
+          print('PUBLIC_TITLE=',page_title)
+          print('PUBLIC_HAS_DEADLINE=', '10月20日17時' in html)
+          print('PUBLIC_HAS_FAQ=', 'Zenlogicのメンテナンスはいつまでですか？' in html)
+          print('PUBLIC_CACHE_CF=',public.headers.get('cf-cache-status'))
+          print('PUBLIC_CACHE_AGE=',public.headers.get('age'))
+          if '【続報】' not in page_title or '10月20日17時' not in html or 'Zenlogicのメンテナンスはいつまでですか？' not in html:
+              raise SystemExit('Public URL verification failed: update is not confirmed on the ordinary public URL.')
+          print('PUBLIC_VERIFICATION=SUCCESS')
+          PY
