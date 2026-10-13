@@ -142,3 +142,5 @@ jobs:
               raise SystemExit('Public URL verification failed: update is not confirmed on the ordinary public URL.')
           print('PUBLIC_VERIFICATION=SUCCESS')
           PY
+
+# Trigger retry: 2026-10-13 21:42 JST
