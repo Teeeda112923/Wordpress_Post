@@ -5,4 +5,4 @@ featured_media=8648
 media_source=https://www.cybernote.click/wp-content/uploads/2026/10/critical-infrastructure-anzenkijun-guideline-2026-1.png
 geo_faq=5
 geo_sources=4
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/38358129531
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/38358863878
