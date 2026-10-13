@@ -1,5 +1,6 @@
 name: Publish NICT A2B Attack Article
 # User-approved article (2026-10-13). Push of this file publishes No.186 with the user-supplied eyecatch.
+# 2026-10-13: added homepage links for organizations at first mention (upsert updates post 8654).
 
 on:
   push:
