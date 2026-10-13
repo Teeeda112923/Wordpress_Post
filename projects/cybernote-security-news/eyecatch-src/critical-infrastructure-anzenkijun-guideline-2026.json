@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.10",
+  "title": ["重要インフラ", "安全基準等策定"],
+  "subtitle": "ガイドライン",
+  "lead": "2026年10月1日 施行",
+  "note": "統一基準を各分野の安全基準へ具体化",
+  "rows": [["対象分野", "16分野", "cyan"], ["旧 策定指針", "廃止", "green"]],
+  "icon": "document",
+  "badge": "shield",
+  "source": "内閣官房 国家サイバー統括室"
+}
