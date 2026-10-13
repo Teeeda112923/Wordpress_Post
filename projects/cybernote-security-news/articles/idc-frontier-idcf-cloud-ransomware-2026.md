@@ -35,6 +35,9 @@ sources:
   - title: "IDCフロンティア Zenlogicへの影響について（2026年10月9日）"
     url: "https://www.idcf.jp/rentalserver/news/2026/20261009-1/"
     publisher: "IDCフロンティア"
+  - title: "Zenlogicカスタマーポータルの緊急メンテナンス案内（2026年10月13日更新）"
+    url: "https://www.idcf.jp/rentalserver/maintenance/2026/20261007-1/"
+    publisher: "IDCフロンティア"
 ---
 # 【続報】IDCフロンティア不正アクセスでJR九州Web会員のメールアドレス最大130万件漏えいの可能性
 
