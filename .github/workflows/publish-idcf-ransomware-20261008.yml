@@ -2,7 +2,7 @@ name: Publish IDCF Ransomware Incident
 # Purge stale IDCF caches trigger: 2026-10-09 00:30 JST
 # Inspect cache purge trigger: 2026-10-09 00:20 JST
 # Diagnose public page trigger: 2026-10-09 00:10 JST
-# Manual publish trigger: 2026-10-10 11:08 JST (republish after cache purge)
+# Manual publish trigger: 2026-10-13 21:45 JST (Zenlogic maintenance extension)
 
 on:
   push:
