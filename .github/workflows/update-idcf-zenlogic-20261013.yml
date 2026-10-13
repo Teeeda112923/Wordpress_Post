@@ -51,7 +51,7 @@ jobs:
           excerpt='IDCフロンティアのランサムウェア事案を解説。JR九州Web会員のメールアドレス最大約130万件の漏えい可能性に加え、Zenlogicカスタマーポータルのメンテナンス完了予定が10月20日17時まで延長されたことを整理。'
 
           # Keep the existing article body and patch only the Zenlogic section.
-          pattern=re.compile(r'(?is)(<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2[^>]*>Zenlogicへの影響について</h2>\s*<!-- /wp:heading -->).*?(?=<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2)')
+          pattern=re.compile(r'(?is)(?:(?:<!-- wp:heading(?:\s+\{.*?\})? -->)\s*)?<h2[^>]*>\s*Zenlogicへの影響について\s*</h2>(?:\s*<!-- /wp:heading -->)?.*?(?=(?:(?:<!-- wp:heading(?:\s+\{.*?\})? -->)\s*)?<h2\b|$)')
           replacement='''<!-- wp:heading {"level":2} -->
           <h2 class="wp-block-heading">Zenlogicへの影響について</h2>
           <!-- /wp:heading -->
@@ -84,7 +84,7 @@ jobs:
           <p>IDCフロンティアの公式案内は2026年10月13日18時に更新され、カスタマーポータルのメンテナンス完了予定は10月20日17時まで再延長されました。Web公開、メール送受信、FTP操作には影響しないと案内されています。これは手続き制限に関する情報で、Zenlogicへの不正アクセスが確認されたことを意味しません。</p>
           <!-- /wp:paragraph -->
           '''
-          source_heading=re.compile(r'(?is)(<!-- wp:heading(?:\s+\{.*?\})? -->\s*<h2[^>]*>参考・出典</h2>)')
+          source_heading=re.compile(r'(?is)((?:(?:<!-- wp:heading(?:\s+\{.*?\})? -->)\s*)?<h2[^>]*>参考・出典</h2>(?:\s*<!-- /wp:heading -->)?)')
           if 'Zenlogicのメンテナンスはいつまでですか？' not in content:
               if not source_heading.search(content):
                   raise SystemExit('Could not locate the source heading for FAQ insertion.')
