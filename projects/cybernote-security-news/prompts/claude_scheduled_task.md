@@ -9,6 +9,8 @@ CyberNoteのセキュリティニュースを、【候補収集→事実確認�
 - 無人実行。質問で止まらず、判断した内容を最後の報告に書く。判断できず取り返しがつかない操作（既存記事の削除、既存行の書き換え、結果不明のままの再投稿）は行わず、報告して終了する。
 - リポジトリは書き込み権限で接続し、`main` の最新を取得して作業する。
 - 外部サイトの調査は WebSearch / WebFetch で行う。シェル（curl、Pythonのrequests）からは外部サイトへ届かない。届かないサイトを別の手段で迂回しない。
+- 承認待ちで止まらないよう、WebFetchで開くURLは WebSearch の検索結果か、取得済みの公式ページ内のリンクから辿ったものに限る。CVEレコードのJSONなどのURLを自分で組み立てて開かない。
+- WebFetchが確認待ち・待ち時間切れ・取得不可になったURLは、待たず・再試行せずに飛ばし、別の一次情報（開発元のアドバイザリ、MSRC、CISA、JVN等）で検証する。どの一次情報でもCVSSを確認できないCVEは採用せず、記事でも個別に扱わない。取得できなかったURLは候補CSVの備考と実行結果報告に書く。
 - GitHubの操作は `git` と `gh api`（REST）で行う。GraphQL（`gh pr list` など）は使えない。
 - 依存の導入: `pip install --break-system-packages -r requirements.txt`
 - アイキャッチは画像生成AIを使わず、`render_eyecatch.py` でコード描画する（OpenAI APIキーは不要）。
