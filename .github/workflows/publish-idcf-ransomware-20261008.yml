@@ -9,6 +9,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/publish-idcf-ransomware-20261008.yml'
+      - 'projects/cybernote-security-news/articles/idc-frontier-idcf-cloud-ransomware-2026.md'
+      - 'projects/cybernote-security-news/data/news_ledger.csv'
   workflow_dispatch:
 
 permissions:
