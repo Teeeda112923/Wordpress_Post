@@ -1,0 +1,72 @@
+name: Inspect Post 8150 (read-only)
+# Read-only investigation: No.200 (Cisco ESA CVE-2026-76519) overwrote post 8150 (CVE-2026-76461, No.108). No writes except the committed output text.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-post-8150-20261016.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt PyYAML
+      - name: Inspect
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+        run: |
+          python - <<'PY'
+          import os, re, builtins
+          _out=open('.github/inspect-post-8150-20261016.txt','w',encoding='utf-8')
+          def print(*a,**k):
+              builtins.print(*a,**k); builtins.print(*a,file=_out); _out.flush()
+          from wp_auto_post import WordPressClient
+          wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          p=wp.request('GET','posts/8150',params={'context':'edit'})
+          print('CURRENT', p['slug'], p['status'], p['date'], p['modified'], 'media', p['featured_media'], 'cats', p['categories'], 'tags', p['tags'])
+          print('TITLE', p['title']['raw'])
+          print('EXCERPT', p['excerpt']['raw'][:200])
+          print('META', {k:(str(v)[:100]) for k,v in (p.get('meta') or {}).items()})
+          revs=wp.request('GET','posts/8150/revisions',params={'context':'edit','per_page':100})
+          for r in revs:
+              c=re.sub(r'<[^>]+>','',r['content']['raw'])
+              print('REV', r['id'], r['date'], r['modified'], '|', r['title']['raw'], '| len', len(c), '|', c.strip()[:50].replace('\n',' '))
+          print('--- dedupe lookups for No.200 ---')
+          slug='cisco-secure-email-gateway-cve-2026-76519-arbitrary-file-write-exploited'
+          title='【緊急】Cisco Secure Email GatewayにCVSS 9.8、実悪用で更新を'
+          for name,fn in [('slug',lambda: wp.find_post_by_slug(slug,'publish')),('title',lambda: wp.find_post_by_title(title,'publish')),('cve',lambda: wp.find_posts_by_cves(['CVE-2026-76519','Cisco Secure Email Gateway',title,slug]))]:
+              try:
+                  r=fn()
+                  r=r if isinstance(r,list) else ([r] if r else [])
+                  print('LOOKUP',name,[(x['id'],x['slug']) for x in r])
+              except Exception as e: print('LOOKUP',name,'ERR',e)
+          for x in wp.request('GET','posts',params={'search':'CVE-2026-76519','status':'publish,future,draft,pending,private','context':'edit','per_page':20}) or []:
+              print('SEARCH', x['id'], x['slug'], x['title']['raw'][:50], '| excerpt76519=', 'CVE-2026-76519' in x['excerpt']['raw'])
+          for q in ['cve-2026-76461','cve-2026-76519']:
+              for m in wp.request('GET','media',params={'search':q,'per_page':20,'context':'edit'}) or []:
+                  print('MEDIA', q, m['id'], m['date'], m.get('source_url'), 'parent', m.get('post'))
+          for t in p['tags']:
+              tt=wp.request('GET',f'tags/{t}'); print('TAG', t, tt.get('name'))
+          PY
+      - name: Commit output
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/inspect-post-8150-20261016.txt || exit 0
+          git commit -m "Record post 8150 inspection output" || exit 0
+          for i in 1 2 3; do git push origin HEAD:main && exit 0; git pull --rebase origin main; sleep 3; done; exit 1
