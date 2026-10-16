@@ -1,0 +1,11 @@
+CURRENT metabase_cve-2026-72898 publish 2026-09-20T15:14:09 2026-10-16T10:29:57 media 8704 cats [4] tags [901, 940, 863, 862, 941, 700, 942]
+META {'googlesitekit_rrm_CAowx_i5DA:productID': '', 'om_disable_all_campaigns': 'False', '_monsterinsights_skip_tracking': 'False', '_uf_show_specific_survey': '0', '_uf_disable_surveys': 'False', '_jetpack_newsletter_access': '', '_jetpack_dont_email_post_to_subs': 'False', '_jetpack_newsletter_tier_id': '0', '_jetpack_memberships_contains_paywalled_content': 'False', '_cng_answer': 'APIとはソフトウェア同士が機能やデータをやり取りする接続口で、便利な反面、情報漏えいの入り口として狙われやすい。', '_cng_faq': '[{"q":"APIとは簡単にいうと何ですか？","a":"あるソフトウェアの機能やデータを、別のソフトウェアから決められたルールで呼び出すための接続口です。地', '_cng_sources': '[{"title":"直近で相次いでいる国内組織における不正アクセスに関する注意喚起","url":"https://www.jpcert.or.jp/at/2', '_cng_cve': 'CVE-2026-72898', 'rank_math_title': 'APIとは？仕組み・種類・具体例と、なぜ今サイバー攻撃で狙われるのかをわかりやすく解説（2026年版）', 'rank_math_description': 'APIとは、ソフトウェア同士が機能やデータをやり取りするための接続口です。仕組みや種類、身近な具体例から、2026年9月前後に国内で相次いだAPI経由の不正アク', 'rank_math_focus_keyword': 'APIとは', '_jetpack_feature_clip_id': '0', '_jetpack_memberships_contains_paid_content': 'False', 'footnotes': '', 'jetpack_publicize_message': '', 'jetpack_publicize_feature_enabled': 'True', 'jetpack_social_post_already_shared': 'True', 'jetpack_social_options': "{'image_generator_settings': {'template': 'highway', 'default_image_id': 0, 'fon", 'jetpack_post_was_ever_published': 'False'}
+REV 8705 2026-10-16T10:29:57 2026-10-16T10:29:57 | APIとは？仕組み・種類・具体例と、なぜ今サイバー攻撃で狙われるのかをわかりやすく解説 | len 8374 | APIとは、異なるソフトウェアやサービスが互いの機能やデータを利用するための接続口のことです。 スマホアプリやネット決済
+REV 8232 2026-09-20T15:14:09 2026-09-20T15:14:09 | 【重要】 Metabaseの脆弱性 CVE-2026-72898とは｜CVSS10.0のSQLインジェクションと対応手順 | len 8428 | オープンソースのBIツールMetabaseに、認証なしで管理者権限を奪われるSQLインジェクションの脆弱性CVE-202
+TAG 901 API
+TAG 940 APIセキュリティ
+TAG 863 CC
+TAG 862 JPCERT
+TAG 941 OWASP
+TAG 700 不正アクセス
+TAG 942 用語解説
