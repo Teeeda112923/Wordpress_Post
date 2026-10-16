@@ -1,5 +1,5 @@
 name: Publish What Is API Glossary Article
-# User-approved article (2026-10-16). Push of this file publishes No.199 "APIとは" (glossary, GEO Kit metadata) with the user-supplied eyecatch.
+# User-approved article (2026-10-16). Push of this file publishes No.199 "APIとは" (glossary, GEO Kit metadata) with the user-supplied eyecatch. Rerun as create_only with cve: "" after the first run overwrote post 8229 via the CVE duplicate check.
 
 on:
   push:
@@ -96,7 +96,7 @@ jobs:
             --articles-dir "$ARTICLES_DIR" \
             --images-dir "$IMAGES_DIR" \
             --post-status publish \
-            --write-mode upsert \
+            --write-mode create_only \
             --category "サイバーセキュリティ" \
             --nos "$TARGET_NO" \
             --limit 1 \
@@ -130,6 +130,7 @@ jobs:
           if status not in {'posted','updated'}:
               raise SystemExit(f"publication failed: {status}: {result.get('error_content') or result.get('message') or ''}")
           post_id=int(result.get('post_id') or 0); post_url=result.get('post_link') or ''
+          if post_id==8229 or status!='posted': raise SystemExit(f'expected a new post, got {status} id={post_id}')
           if not post_id or not post_url: raise SystemExit('post id/url missing')
 
           wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
