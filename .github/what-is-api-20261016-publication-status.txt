@@ -1,8 +1,8 @@
 state=published
-post_id=8229
-post_url=https://www.cybernote.click/2026/09/20/metabase_cve-2026-72898/
-featured_media=8704
-media_source=https://www.cybernote.click/wp-content/uploads/2026/10/what-is-api.png
+post_id=8708
+post_url=https://www.cybernote.click/2026/10/16/what-is-api/
+featured_media=8707
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/what-is-api-1.png
 geo_faq=5
 geo_sources=3
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/38835199293
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/38836331623
