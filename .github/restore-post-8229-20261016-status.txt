@@ -1,0 +1,5 @@
+media_candidates= [(8230, 'https://www.cybernote.click/wp-content/uploads/2026/09/image-33.png'), (8231, 'https://www.cybernote.click/wp-content/uploads/2026/09/image-34.png')] chosen= 8230
+state=restored
+title= 【重要】 Metabaseの脆弱性 CVE-2026-72898とは｜CVSS10.0のSQLインジェクションと対応手順
+slug= metabase_cve-2026-72898 status= publish featured_media= 8230 tags= [943, 862, 414, 596, 45]
+link= https://www.cybernote.click/2026/09/20/metabase_cve-2026-72898/
