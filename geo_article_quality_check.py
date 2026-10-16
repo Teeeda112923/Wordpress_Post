@@ -496,6 +496,16 @@ def main() -> int:
         article = find_article(Path(args.articles_dir), slug, no)
         errors: list[str] = []
         warnings: list[str] = []
+        # 投稿処理は「同一タイトル＝同じ記事」として既存投稿を上書きするため、
+        # 台帳の別の行と同じ記事タイトルは投稿前に止める（2026-10-16 No.200 が No.108 を上書きした）。
+        for other in rows:
+            other_no = str(other.get("No", "")).strip()
+            if other_no != no and title and title == str(other.get("記事タイトル", "")).strip():
+                errors.append(
+                    f"記事タイトルが台帳のNo.{other_no}と同一です"
+                    "（投稿時に既存記事を上書きするため、別のタイトルにしてください）"
+                )
+                break
         core_count = 0
         intro_count = 0
         answer_count = 0

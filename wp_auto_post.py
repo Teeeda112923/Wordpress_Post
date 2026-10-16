@@ -622,6 +622,32 @@ def find_article_file(articles_dir: Path, slug: str, no_value: str) -> Path | No
     return first_existing(candidates)
 
 
+# slug（...-cve-2026-12345-...）の中のCVE番号も拾うため、前後のハイフンは区切りとして許す。
+_CVE_ID_RE = re.compile(r"(?<![A-Z0-9])CVE-\d{4}-\d{4,}(?!\d)", re.I)
+
+
+def cve_ids_in(*values: Any) -> set[str]:
+    """文字列群に含まれるCVE番号を大文字で集める。"""
+    return {m.group(0).upper() for v in values for m in _CVE_ID_RE.finditer(safe_str(v))}
+
+
+def existing_post_cve_conflict(existing: dict[str, Any], new_cves: set[str]) -> set[str]:
+    """既存投稿が別のCVEの記事なら、その既存側のCVE番号を返す（衝突なしは空集合）。
+
+    slug / title の一致で見つけた既存投稿を更新（上書き）する前の安全装置。
+    両方にCVE番号があり、1件も重なっていなければ別の記事とみなす。
+    """
+    meta = existing.get("meta") or {}
+    existing_cves = cve_ids_in(
+        existing.get("slug"),
+        (existing.get("title") or {}).get("raw") if isinstance(existing.get("title"), dict) else existing.get("title"),
+        meta.get("_cng_cve") if isinstance(meta, dict) else "",
+    )
+    if existing_cves and new_cves and not (existing_cves & new_cves):
+        return existing_cves
+    return set()
+
+
 def is_truthy(value: Any) -> bool:
     """フロントマターの真偽値を解釈する。
 
@@ -2466,6 +2492,22 @@ def main() -> int:
                             f"正規URLを維持するため slug='{existing_slug}' を使います。"
                         )
                         slug = existing_slug
+            # 見つけた既存投稿が別のCVEの記事なら、上書きせず止める。
+            # （タイトルが同じというだけで別CVEの記事を更新してしまう事故の防止）
+            if existing and not is_roundup:
+                conflict = existing_post_cve_conflict(
+                    existing,
+                    cve_ids_in(
+                        safe_str(front_matter.get("cve")) if "cve" in front_matter
+                        else safe_str(cng_meta.get("_cng_cve")),
+                        slug,
+                    ),
+                )
+                if conflict:
+                    raise RuntimeError(
+                        f"既存投稿 id={existing.get('id')} は別のCVE（{', '.join(sorted(conflict))}）の記事です。"
+                        "上書きを防ぐため投稿を中止します。記事タイトル・slugを別の記事と重複させないでください。"
+                    )
         elif wp and args.skip_existing_check:
             print("    既存投稿確認を省略します（create_only / 管理簿で重複管理）")
         existence_known = wp is not None
