@@ -1,0 +1,73 @@
+name: Restore Post 8229 (Metabase CVE-2026-72898)
+# User-approved restore (2026-10-16): post 8229 was overwritten by the what-is-api run. Restores title/content/excerpt from revision 8232, resets Rank Math and tags, clears the API GEO Kit fields, and restores the original eyecatch if found.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restore-post-8229-20261016.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cybernote-security-news-fast-publish
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt PyYAML
+      - name: Restore
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
+          WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
+          FALLBACK_MEDIA_ID: ${{ vars.WP_FALLBACK_MEDIA_ID || '5297' }}
+        run: |
+          python - <<'PY'
+          import os, re, html, builtins
+          from wp_auto_post import WordPressClient
+          out=open('.github/restore-post-8229-20261016-status.txt','w',encoding='utf-8')
+          def log(*a):
+              builtins.print(*a); builtins.print(*a,file=out); out.flush()
+          wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          rev=wp.request('GET','posts/8229/revisions/8232',params={'context':'edit'})
+          title=rev['title']['raw']; content=rev['content']['raw']; excerpt=rev['excerpt']['raw']
+          if 'Metabase' not in title or len(content)<1000: raise SystemExit('revision 8232 unexpected')
+          media=[m for m in (wp.request('GET','media',params={'parent':8229,'per_page':50,'context':'edit'}) or []) if int(m['id'])!=8704]
+          media.sort(key=lambda m:m['date'])
+          media_id=int(media[0]['id']) if media else int(os.environ['FALLBACK_MEDIA_ID'])
+          log('media_candidates=', [(m['id'],m.get('source_url')) for m in media], 'chosen=', media_id)
+          tags=[wp.find_or_create_term('post_tag',n) for n in ['Metabase','CVE-2026-72898','SQLインジェクション','脆弱性','JPCERT']]
+          desc=html.unescape(re.sub(r'<[^>]+>','',excerpt)).strip()
+          if not desc:
+              desc=html.unescape(re.sub(r'<[^>]+>','',content)).strip()[:120]
+          payload={'title':title,'content':content,'excerpt':excerpt,'featured_media':media_id,'tags':tags,
+                   'meta':{'_cng_answer':'','_cng_faq':'','_cng_sources':'','_cng_cve':'CVE-2026-72898',
+                           'rank_math_title':title,'rank_math_description':desc[:160],'rank_math_focus_keyword':'Metabase CVE-2026-72898'}}
+          wp.request('POST','posts/8229',json=payload)
+          p=wp.request('GET','posts/8229',params={'context':'edit'})
+          ok = p['title']['raw']==title and p['slug']=='metabase_cve-2026-72898' and p['status']=='publish' and 'Metabase' in p['content']['raw']
+          log('state='+('restored' if ok else 'CHECK'))
+          log('title=',p['title']['raw']); log('slug=',p['slug'],'status=',p['status'],'featured_media=',p['featured_media'],'tags=',p['tags'])
+          log('link=',p['link'])
+          if not ok: raise SystemExit('verification failed')
+          PY
+      - name: Commit status
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/restore-post-8229-20261016-status.txt || exit 0
+          git commit -m "Record post 8229 restore status" || exit 0
+          for i in 1 2 3; do git push origin HEAD:main && exit 0; git pull --rebase origin main; sleep 3; done; exit 1
