@@ -1,8 +1,8 @@
 state=published
 post_id=8544
 post_url=https://www.cybernote.click/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/
-featured_media=8543
-media_source=https://www.cybernote.click/wp-content/uploads/2026/10/idc-frontier-idcf-cloud-ransomware-2026-2.png
+featured_media=8700
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/idc-frontier-idcf-cloud-ransomware-2026-3.png
 geo_faq=8
 geo_sources=8
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/38733529472
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/38833120682
