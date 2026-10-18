@@ -194,6 +194,9 @@ jobs:
           title=((post.get('title') or {}).get('raw') or (post.get('title') or {}).get('rendered') or '')
           raw=((post.get('content') or {}).get('raw') or '')
           print('REST_TITLE=', title)
+          expected_title='【続報】IDCフロンティア第6報、バックアップサービス再開　スナップショットは停止継続'
+          if title != expected_title:
+              raise SystemExit(f'WordPress REST title mismatch: expected={expected_title!r}, actual={title!r}')
           print('REST_HAS_TESLA=', 'tesla' in raw.lower())
           print('REST_HAS_THIRD_REPORT=', '第3報' in raw)
           url=post.get('link') or 'https://www.cybernote.click/2026/10/08/idc-frontier-idcf-cloud-ransomware-2026/'
@@ -312,8 +315,9 @@ jobs:
           print('AFTER_PURGE_CF=',r.headers.get('cf-cache-status'))
           print('AFTER_PURGE_LITESPEED=',r.headers.get('x-litespeed-cache'))
           print('AFTER_PURGE_AGE=',r.headers.get('age'))
-          if not title.startswith('【続報】'):
-              raise SystemExit('通常URLがまだ旧キャッシュです')
+          expected_title='【続報】IDCフロンティア第6報、バックアップサービス再開　スナップショットは停止継続'
+          if title != expected_title:
+              raise SystemExit(f'通常URLのタイトル不一致。expected={expected_title!r}, actual={title!r}。公開反映未確認です。')
           PY
 
       - name: Commit publication artifacts
