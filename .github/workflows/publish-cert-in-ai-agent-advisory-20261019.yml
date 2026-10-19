@@ -1,6 +1,7 @@
 name: Publish CERT-In AI Agent Advisory Article
 # User-approved article (2026-10-19). Push of this file publishes No.208 with the
 # user-supplied eyecatch and six user-supplied H2 illustrations.
+# Retry 1 (2026-10-19): reuse already-landed media, log upload progress.
 
 on:
   push:
@@ -97,7 +98,8 @@ jobs:
           WP_USER_AGENT: ${{ vars.WP_USER_AGENT }}
           WP_EXTRA_HEADERS: ${{ secrets.WP_EXTRA_HEADERS }}
         run: |
-          python - <<'PY'
+          set -o pipefail
+          python - <<'PY' 2>&1 | tee "$RESULTS_DIR/inline-upload.log"
           import os, re
           from pathlib import Path
           from wp_auto_post import WordPressClient
@@ -113,21 +115,29 @@ jobs:
               'IMG_DETECT':'detection-response',
               'IMG_PREVENT':'prevention',
           }
+          import datetime as dt, time
           wp=WordPressClient(os.environ['WP_BASE_URL'],os.environ['WP_USERNAME'],os.environ['WP_APP_PASSWORD'])
+          since=dt.datetime(2026,10,19,tzinfo=dt.timezone.utc)
           for marker,name in mapping.items():
               token='{{'+marker+'}}'
               if token not in md:
-                  print('already injected:',marker); continue
+                  print('already injected:',marker,flush=True); continue
               alt=re.search(r'!\[([^\]]*)\]\('+re.escape(token)+r'\)',md).group(1)
               path=Path(os.environ['ARTICLE_IMAGES_DIR'])/f'{slug}-{name}.png'
-              _,url=wp.upload_media(path,alt_text=alt)
+              t0=time.time()
+              found=wp.find_media_uploaded_since(path.name,since,expected_image=path)
+              if found and found[1]:
+                  url=found[1]; print('reusing existing media:',found[0],url,flush=True)
+              else:
+                  print('uploading:',path.name,path.stat().st_size,'bytes',flush=True)
+                  _,url=wp.upload_media(path,alt_text=alt)
               if not url:
                   raise RuntimeError(f'media URL missing for {path}')
               md=md.replace(token,url)
-              print('uploaded:',url)
+              article.write_text(md,encoding='utf-8')
+              print(f'done {marker} in {time.time()-t0:.0f}s:',url,flush=True)
           if '{{IMG_' in md:
               raise SystemExit('unreplaced image marker remains')
-          article.write_text(md,encoding='utf-8')
           PY
 
       - name: Publish to WordPress
@@ -244,6 +254,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           printf 'state=failed\nrun_id=%s\nrun_url=https://github.com/%s/actions/runs/%s\n' "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$STATUS_FILE"
+          { echo '--- inline upload log (tail) ---'; tail -n 60 "$RESULTS_DIR/inline-upload.log" 2>/dev/null; echo '--- publish result (tail) ---'; tail -n 5 "$RESULTS_DIR"/results_*.csv 2>/dev/null; } | sed -E 's/(password|Authorization|Basic)[^ ]*/[redacted]/Ig' >> "$STATUS_FILE"
           git add -f "$STATUS_FILE"
           git commit -m "Record failed CERT-In AI agent advisory publication" || true
           git pull --rebase origin main || true
