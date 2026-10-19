@@ -1,3 +1,9 @@
-state=failed
-run_id=39190341517
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/39190341517
+state=published
+post_id=8776
+post_url=https://www.cybernote.click/2026/10/19/cert-in-ai-agent-attack-advisory-ciad-2026-0049/
+featured_media=8775
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/cert-in-ai-agent-attack-advisory-ciad-2026-0049.png
+inline_images=6
+geo_faq=5
+geo_sources=4
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/39192609245
