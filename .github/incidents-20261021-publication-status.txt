@@ -1,2 +1,3 @@
 no=220 state=published post_id=8840 post_url=https://www.cybernote.click/2026/10/21/furusato-choice-trustbank-unauthorized-access-2026/ featured_media=8839 geo_faq=5 geo_sources=2
 no=221 state=published post_id=8842 post_url=https://www.cybernote.click/2026/10/21/h2o-retailing-hankyu-hanshin-unauthorized-access-2026/ featured_media=8841 geo_faq=4 geo_sources=1
+no=222 state=published post_id=8844 post_url=https://www.cybernote.click/2026/10/21/jfa-passport-unauthorized-access-2026/ featured_media=8843 geo_faq=5 geo_sources=1
