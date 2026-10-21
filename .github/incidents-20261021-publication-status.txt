@@ -2,3 +2,4 @@ no=220 state=published post_id=8840 post_url=https://www.cybernote.click/2026/10
 no=221 state=published post_id=8842 post_url=https://www.cybernote.click/2026/10/21/h2o-retailing-hankyu-hanshin-unauthorized-access-2026/ featured_media=8841 geo_faq=4 geo_sources=1
 no=222 state=published post_id=8844 post_url=https://www.cybernote.click/2026/10/21/jfa-passport-unauthorized-access-2026/ featured_media=8843 geo_faq=5 geo_sources=1
 no=224 state=published post_id=8846 post_url=https://www.cybernote.click/2026/10/21/yamato-kuroneko-atobarai-unauthorized-access-2026/ featured_media=8845 geo_faq=5 geo_sources=2
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/39556755892
