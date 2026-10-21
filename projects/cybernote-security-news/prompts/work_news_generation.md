@@ -16,7 +16,7 @@ CyberNoteで当日公開する短いセキュリティニュースを作成す�
 
 複数CVEを扱う場合は、記事の中心となるCVEがKEV掲載または8.0以上でなければ採用しない。KEV掲載でも、日本で普及した製品でなければ採用しない。Windows、Microsoft 365、Google Chrome、Android、Apple製品、WordPress、AWS、Azure、Google Cloud、Cisco、Fortinet、Palo Alto Networks、VMware、Apache、Ivanti、Citrix、SonicWallなど、利用者や導入企業が多い製品・基盤を優先する。航空、医療、産業制御など用途が限定された専門製品は、一次情報が充実していても自動選定では採用しない。
 
-WordPressプラグインは、国内利用数（WPカタログ調べ）が100件以上なら、日本で普及した製品とみなす。100件未満でも、CISAのKEV掲載または一次情報で実際の悪用が確認されていれば採用してよい（国内利用数は1件以上、「確認できず」は不可）。KEV未掲載ならCVSS 8.0以上の条件は変えない。WPカタログとWordfenceは候補の収集だけに使い、記事の本文・出典には使わない。詳細は別の一次情報で調べて書く。手順は `claude_scheduled_task.md` の「WordPressプラグインの脆弱性（WPカタログ）」に従う。
+WordPressプラグインは、WordPress.orgの有効インストール数が10万以上なら、日本で普及した製品とみなす。10万未満でも、CISAのKEV掲載または一次情報で実際の悪用が確認され、有効インストール数が1万以上なら採用してよい。KEV未掲載ならCVSS 8.0以上の条件は変えない。WPカタログ（wpcatalog.jp）は使わない。詳細は別の一次情報で調べて書く。手順は `claude_scheduled_task.md` の「WordPressプラグインの脆弱性」に従う。
 
 必須条件を満たした候補について、次の順で比較する。
 
