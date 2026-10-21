@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.10",
+  "title": ["WordPressの", "PHPバージョン"],
+  "subtitle": "確認と更新の方法",
+  "lead": "サイトヘルスで確認し、8.3以上へ",
+  "rows": [["8.1以前", "今すぐ切り替え", "red"], ["8.3以上", "推奨", "green"]],
+  "icon": "browser",
+  "badge": "shield",
+  "source": "PHP.net / WordPress.org"
+}
