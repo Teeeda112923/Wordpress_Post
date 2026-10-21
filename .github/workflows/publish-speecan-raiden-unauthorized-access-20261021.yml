@@ -1,5 +1,5 @@
 name: Publish SpeeCAN RAIDEN Unauthorized Access Article
-# User-approved article (2026-10-21). Push of this file publishes No.215 (long-form, GEO Kit metadata) with the user-supplied eyecatch.
+# User-approved article (2026-10-21). Push of this file publishes No.215 (long-form, GEO Kit metadata) with the user-supplied eyecatch. Re-run with cve: "" declared (2026-10-21).
 
 on:
   push:
