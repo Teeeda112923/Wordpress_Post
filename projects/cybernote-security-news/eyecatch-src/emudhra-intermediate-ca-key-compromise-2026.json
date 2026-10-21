@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.10",
+  "title": ["eMudhra", "中間CA証明書"],
+  "subtitle": "秘密鍵が漏えい",
+  "lead": "鍵生成のミスで誰でも復元可能",
+  "note": "主要ブラウザは遮断済み・アプリは要更新",
+  "rows": [["対象の中間CA", "8枚", "red"], ["主要ブラウザ", "遮断済み", "green"]],
+  "icon": "server",
+  "badge": "warning",
+  "source": "Mozilla / eMudhra"
+}
