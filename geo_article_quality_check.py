@@ -27,7 +27,7 @@ PRIMARY_DOMAINS = {
     "sogo.nu", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
     "trendmicro.com", "aboutamazon.com", "aws.amazon.com", "nato.int",
     "japanpost.jp", "sagawa-exp.co.jp", "park24.co.jp", "timescar.jp", "daiwa.jp",
-    "php.net",
+    "php.net", "rankmath.com",
 }
 
 IMPACT_PATTERNS = {
