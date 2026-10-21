@@ -1,6 +1,6 @@
 name: Publish Incident Articles 2026-10-21
 # User-approved articles (2026-10-21): Furusato Choice (No.220), H2O ID (No.221),
-# JFA Passport (No.222). Long-form with GEO Kit metadata and user-supplied
+# JFA Passport (No.222), Yamato Kuroneko deferred payment (No.224). Long-form with GEO Kit metadata and user-supplied
 # eyecatches. Published one at a time, 10 minutes apart.
 
 on:
@@ -22,7 +22,7 @@ env:
   ARTICLES_DIR: projects/cybernote-security-news/articles
   IMAGES_DIR: projects/cybernote-security-news/eyecatches
   RESULTS_DIR: projects/cybernote-security-news/results
-  TARGET_NOS: '220 221 222'
+  TARGET_NOS: '220 221 222 224'
   INTERVAL_SEC: '600'
   STATUS_FILE: .github/incidents-20261021-publication-status.txt
   PYTHONUNBUFFERED: '1'
