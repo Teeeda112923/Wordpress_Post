@@ -62,7 +62,7 @@ jobs:
               raise SystemExit('answer missing')
           if len(meta.get('faq') or []) < 3:
               raise SystemExit('faq incomplete')
-          if len(meta.get('sources") or []) < 5:
+          if len(meta.get('sources') or []) < 5:
               raise SystemExit('sources incomplete')
           if '## まとめ' not in body:
               raise SystemExit('summary section missing')
