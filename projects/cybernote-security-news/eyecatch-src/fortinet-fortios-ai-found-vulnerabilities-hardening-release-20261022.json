@@ -1,0 +1,11 @@
+{
+  "layout": "banner",
+  "tone": "update",
+  "label": "重要セキュリティ更新",
+  "title": ["FortiOSほか", "Fortinet 5製品"],
+  "cve": "詳細は11月10日公開予定",
+  "action": "外部公開機器から修正版へ更新",
+  "action_accent": "外部公開機器",
+  "icon": "router",
+  "badge": "shield"
+}
