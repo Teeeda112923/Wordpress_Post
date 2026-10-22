@@ -1,0 +1,8 @@
+state=published
+post_id=8904
+post_url=https://www.cybernote.click/2026/10/22/fortinet-fortios-ai-found-vulnerabilities-hardening-release-20261022/
+featured_media=8903
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/fortinet-fortios-ai-found-vulnerabilities-hardening-release-20261022.png
+geo_faq=4
+geo_sources=3
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/39782372817
