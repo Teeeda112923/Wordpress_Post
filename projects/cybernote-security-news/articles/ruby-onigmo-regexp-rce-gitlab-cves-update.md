@@ -2,6 +2,7 @@
 title: "Ruby脆弱性、正規表現エンジンOnigmoでコード実行の恐れ｜4.0.9・3.4.12・3.3.13へ更新を"
 slug: "ruby-onigmo-regexp-rce-gitlab-cves-update"
 cve: "CVE-2026-89078, CVE-2026-93577, CVE-2026-97229, CVE-2026-110264"
+roundup: true
 date: "2026-10-23"
 author: "CyberNote編集部"
 description: "Rubyの正規表現エンジンOnigmoに、GitLabが見つけたメモリ破壊の不具合があり、Ruby 4.0.9・3.4.12・3.3.13で修正されました。影響を受けるアプリの条件、CVE番号、修正版と暫定対策をまとめます。"

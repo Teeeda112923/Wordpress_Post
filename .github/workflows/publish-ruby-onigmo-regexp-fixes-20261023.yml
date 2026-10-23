@@ -1,5 +1,5 @@
 name: Publish Ruby Onigmo Regexp Fix Article
-# User-requested article (2026-10-23). Rev3: surface publish errors as annotations. Push of this file publishes No.240 (Ruby 4.0.9/3.4.12/3.3.13 Onigmo fixes) with a code-rendered eyecatch.
+# User-requested article (2026-10-23). Rev4: roundup: true (CVEs already have individual GitLab articles; must not overwrite them); publish errors surface as annotations. Push of this file publishes No.240 (Ruby 4.0.9/3.4.12/3.3.13 Onigmo fixes) with a code-rendered eyecatch.
 
 on:
   push:
