@@ -1,5 +1,5 @@
 name: Inspect and purge post 8593 (JPCERT-AT-2026-0030 refresh) 2026-10-23
-# Read-only REST check plus cache flush after the user-approved refresh of post 8593.
+# Run 2. Read-only REST check plus cache flush after the user-approved refresh of post 8593.
 
 on:
   push:
@@ -9,13 +9,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -30,7 +31,7 @@ jobs:
           CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
           CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
         run: |
-          python - <<'PY'
+          python - <<'PY' 2>&1 | tee .github/post-8593-inspect-20261023.txt
           import base64, os, re, time, requests
           base=os.environ['WP_BASE_URL'].rstrip('/')
           tok=base64.b64encode((os.environ['WP_USERNAME']+':'+os.environ['WP_APP_PASSWORD'].replace(' ','')).encode()).decode()
@@ -64,3 +65,10 @@ jobs:
               for k in ['cf-cache-status','x-litespeed-cache','age','server']:
                   if r.headers.get(k): print(label,k,r.headers.get(k))
           PY
+      - name: Commit inspection output
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/post-8593-inspect-20261023.txt
+          git commit -m "Record post 8593 inspection" || exit 0
+          for a in 1 2 3; do git push origin HEAD:main && exit 0; git pull --rebase origin main; sleep 3; done
