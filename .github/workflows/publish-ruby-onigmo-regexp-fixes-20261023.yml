@@ -1,5 +1,5 @@
 name: Publish Ruby Onigmo Regexp Fix Article
-# User-requested article (2026-10-23). Push of this file publishes No.240 (Ruby 4.0.9/3.4.12/3.3.13 Onigmo fixes) with a code-rendered eyecatch.
+# User-requested article (2026-10-23). Rev2: surface publish errors as annotations. Push of this file publishes No.240 (Ruby 4.0.9/3.4.12/3.3.13 Onigmo fixes) with a code-rendered eyecatch.
 
 on:
   push:
@@ -90,7 +90,13 @@ jobs:
             --skip-auth-check \
             --skip-internal-link-resolution \
             --fallback-media-id "$FALLBACK_MEDIA_ID" \
-            --output-dir "$RESULTS_DIR"
+            --output-dir "$RESULTS_DIR" 2>&1 | tee "$RESULTS_DIR/publish.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            grep -v '^\s*$' "$RESULTS_DIR/publish.log" | tail -n 25 | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::${line}"; done
+            for f in "$RESULTS_DIR"/results_*.csv; do [ -f "$f" ] && tail -n 2 "$f" | sed 's/%/%25/g' | while IFS= read -r line; do echo "::error::CSV ${line}"; done; done
+            exit "$rc"
+          fi
 
       - name: Verify publication and update ledger
         env:
