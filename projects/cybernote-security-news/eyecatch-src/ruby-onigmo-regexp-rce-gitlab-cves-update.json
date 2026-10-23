@@ -1,0 +1,11 @@
+{
+  "layout": "banner",
+  "tone": "alert",
+  "label": "セキュリティ更新",
+  "title": "Ruby（Onigmo）",
+  "cve": "CVE-2026-110264ほか",
+  "action": "4.0.9／3.4.12／3.3.13へ更新",
+  "action_accent": "4.0.9／3.4.12／3.3.13",
+  "icon": "code",
+  "badge": "shield"
+}
