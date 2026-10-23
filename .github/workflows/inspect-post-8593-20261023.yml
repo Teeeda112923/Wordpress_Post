@@ -1,0 +1,66 @@
+name: Inspect and purge post 8593 (JPCERT-AT-2026-0030 refresh) 2026-10-23
+# Read-only REST check plus cache flush after the user-approved refresh of post 8593.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/inspect-post-8593-20261023.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install requests
+      - name: Inspect REST, flush caches, check public page
+        env:
+          WP_BASE_URL: ${{ secrets.WP_BASE_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ secrets.CLOUDFLARE_ZONE_ID }}
+          CF_ZONE_ID: ${{ secrets.CF_ZONE_ID }}
+        run: |
+          python - <<'PY'
+          import base64, os, re, time, requests
+          base=os.environ['WP_BASE_URL'].rstrip('/')
+          tok=base64.b64encode((os.environ['WP_USERNAME']+':'+os.environ['WP_APP_PASSWORD'].replace(' ','')).encode()).decode()
+          h={'Authorization':'Basic '+tok,'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache'}
+          p=requests.get(base+'/wp-json/wp/v2/posts/8593',params={'context':'edit'},headers=h,timeout=60).json()
+          raw=(p.get('content') or {}).get('raw') or ''
+          print('REST_TITLE=',(p.get('title') or {}).get('raw'))
+          print('REST_MODIFIED=',p.get('modified'))
+          print('REST_HAS_CASE_E=','ケースE' in raw)
+          print('REST_HAS_25=','25件' in raw)
+          url='https://www.cybernote.click/2026/10/11/jpcert-at-2026-0030-unauthorized-access-ioc/'
+          for name,ep in [('jetpack_site_cache',base+'/wp-json/jetpack/v4/site/cache/flush'),
+                          ('jetpack_boost_page_cache',base+'/wp-json/jetpack-boost-ds/page-cache/action/clear-page-cache')]:
+              try:
+                  r=requests.post(ep,headers=h,json={},timeout=60); print(name,r.status_code,r.text[:160].replace('\n',' '))
+              except Exception as e: print(name,'ERR',e)
+          try:
+              r=requests.request('PURGE',url,headers=h,timeout=60); print('PURGE',r.status_code,r.headers.get('x-litespeed-cache'))
+          except Exception as e: print('PURGE ERR',e)
+          t=os.environ.get('CLOUDFLARE_API_TOKEN') or os.environ.get('CF_API_TOKEN') or ''
+          z=os.environ.get('CLOUDFLARE_ZONE_ID') or os.environ.get('CF_ZONE_ID') or ''
+          if t and z:
+              r=requests.post(f'https://api.cloudflare.com/client/v4/zones/{z}/purge_cache',headers={'Authorization':'Bearer '+t},json={'files':[url]},timeout=60)
+              print('CF_PURGE',r.status_code,(r.json() or {}).get('success'))
+          time.sleep(5)
+          for label,u in [('public',url),('bust',url+'?cb='+str(int(time.time())))]:
+              r=requests.get(u,headers={'User-Agent':'Mozilla/5.0','Cache-Control':'no-cache','Pragma':'no-cache'},timeout=60)
+              m=re.search(r'<title[^>]*>(.*?)</title>',r.text,re.S)
+              print(label,'TITLE=',m.group(1).strip() if m else '')
+              print(label,'HAS_CASE_E=','ケースE' in r.text)
+              for k in ['cf-cache-status','x-litespeed-cache','age','server']:
+                  if r.headers.get(k): print(label,k,r.headers.get(k))
+          PY
