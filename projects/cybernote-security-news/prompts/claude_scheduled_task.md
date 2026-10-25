@@ -167,6 +167,7 @@ python -m unittest discover -s projects/cybernote-security-news/tests -p 'test_*
 1. 合格した記事Markdown、PNG、`{slug}.png.identity.json`、`eyecatch-src/{slug}.json` を `main` へコミットして push する
 2. `git fetch` 後、`origin/main` 上のファイルがローカルと一致すること（`git diff origin/main -- 対象パス` が空）と、PNGの署名・完全デコード・サイズ・RGBを再確認する
 3. その後にのみ、`news_ledger.csv` へ新規行を既存形式で追記して push する。指定KWは主対象製品名のみ、生成ステータス=生成済み、レビュー判定=未確認、公開停止=空欄
+4. 台帳・記事Markdownを保存したら、push の前に必ず次を確認する。台帳の1行目が `No,収集日,…` のヘッダー（先頭のBOMは可）で始まり、記事Markdownの1行目が `---` であること。ツールの警告文（例: `Warning: fs was declared with const…`）が先頭に混入したり、台帳の改行コードが変わったりしていたら、取り除いてから保存する（2026-10-25に台帳の先頭へ警告文が混入し、自動選択が止まった）。台帳への追記はファイル末尾への1行追加だけにし、全体を書き直さない
 
 既存のCSV行・記事・画像、AWS障害関連記事、cron、投稿枠、無関係のワークフローは変更しない。`main` への push が拒否されたら、別ブランチへ逃がさずに原因を報告して終了する。
 
