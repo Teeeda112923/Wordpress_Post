@@ -3,7 +3,7 @@
 プラグインは投稿メタに保存された以下の4項目を使って、結論ボックス・FAQブロック・
 出典リストの表示と、JSON-LD（FAQPage / citation / about）・llms.txt を生成する。
 
-    _cng_answer  : この記事の結論（40〜60字）
+    _cng_answer  : この記事の結論（150〜200字）
     _cng_cve     : 関連CVE / 脆弱性ID（カンマ区切り）
     _cng_faq     : FAQ [{"q": ..., "a": ...}, ...] のJSON
     _cng_sources : 出典 [{"title":..., "url":..., "publisher":...}, ...] のJSON
@@ -79,8 +79,8 @@ _FAQ_HEADINGS = ("FAQ", "よくある質問")
 _SOURCE_HEADINGS = ("参考情報", "参考・出典", "出典元", "出典", "参考")
 _PLUGIN_RENDERED_HEADINGS = ("FAQ", "よくある質問", "参考情報", "参考・出典")
 
-_ANSWER_MIN = 40
-_ANSWER_MAX = 60
+_ANSWER_MIN = 150
+_ANSWER_MAX = 200
 
 # フロントマターFAQ回答の目安（geo_article_quality_check.py と同じ基準）。
 # 下限は当初70字だったが、1文で簡潔に答えた回答が60台後半で落ちる例が続いたため

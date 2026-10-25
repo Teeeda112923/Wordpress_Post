@@ -311,7 +311,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     elif not answer.endswith("。"):
         errors.append("answerが「。」で終わっていません")
     else:
-        check_range("answer", chars(answer), 40, 60)
+        check_range("answer", chars(answer), 150, 200)
 
     if re.search(r"(?m)^cve:", front) is None:
         errors.append("フロントマターcveがありません")

@@ -20,7 +20,7 @@ from seo_recovery_audit import daily_volume, duplicate_groups  # noqa: E402
 
 def valid_front(*, faq_count: int = 2, source_url: str = "https://msrc.microsoft.com/update-guide/vulnerability/CVE-2026-12345") -> str:
     answer_text = "回" * 60
-    conclusion = "結" * 39 + "。"
+    conclusion = "結" * 149 + "。"
     faq = "\n".join(
         f'  - q: "質問{index}ですか？"\n    a: "{answer_text}"'
         for index in range(1, faq_count + 1)
