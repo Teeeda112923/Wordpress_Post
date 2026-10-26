@@ -43,6 +43,10 @@ CVSS基本値は、CVEを採番したCNA（製品開発元など）の値を優�
 
 Windows、Microsoft 365、Chrome、Android、Apple、WordPress、AWS、Azure、Google Cloud、Cisco、Fortinet、Palo Alto Networks、VMware、Apache、Ivanti、Citrix、SonicWall等を優先する。航空・医療・産業制御等の限定的な専門製品は自動採用しない。ただしJoomla本体と拡張機能、特にYouTube Galleryは普及度だけで除外しない（CVSS8.0以上と公式検証は必要）。複数CVEのまとめでも主題CVEがKEV掲載または8.0以上であること。KEV未掲載でCVSSが未検証または8.0未満のもの、知名度や適用範囲が不足する情報は件数合わせで採用しない。KEV掲載のCVEでも、日本で普及した製品でなければ採用しない。KEV掲載のCVEは、記事にKEVへの掲載日と、確認できたCVSSの値・評価元を書く。
 
+### 候補の入口として使える二次情報
+
+セキュリティ対策Lab（合同会社ロケットボーイズ、rocket-boys.co.jp/security-measures-lab）などの国内セキュリティ報道は、候補を見つける入口として使ってよい（2026-10-26 運営者の指示）。WebSearchで `allowed_domains` に指定して直近の記事を拾う。ただし記事の根拠や採用判断には使わない。KEV掲載・CVSS・公表日・対象製品・修正版は、必ず一次情報（開発元、CISA、NVD、JVN、JPCERT/CC等）のURLで確認し、確認できないものは採用しない。出典欄にも二次情報だけを載せない。
+
 ### WordPressプラグインの脆弱性
 
 WordPressプラグインの脆弱性にも、上の自動採用の条件（KEVまたはCVSS 8.0以上、14日以内）をそのまま使う。WPカタログ（wpcatalog.jp）は信頼性に不安があるため、候補の入口にも根拠にも使わない（2026-10-21 運営者の指示）。変わるのは「日本で普及した製品か」の判定だけで、プラグインでは WordPress.org のプラグインページの有効インストール数で判定する。
