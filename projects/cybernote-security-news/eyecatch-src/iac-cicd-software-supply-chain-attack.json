@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.10",
+  "title": ["IaC・CI/CDを狙う", "サプライチェーン攻撃"],
+  "subtitle": "手口と対策",
+  "lead": "設定ファイルとビルド環境も守る対象に",
+  "rows": [["外部モジュール", "版を固定", "cyan"], ["秘密情報", "最小化", "green"]],
+  "icon": "code",
+  "badge": "shield",
+  "source": "IPA / CISA / 経済産業省"
+}
