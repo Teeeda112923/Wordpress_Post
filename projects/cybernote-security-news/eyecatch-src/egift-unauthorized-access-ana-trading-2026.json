@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.10",
+  "title": ["選べるe-GIFTに", "不正アクセス"],
+  "subtitle": "ギフトの不正交換も発生",
+  "lead": "全日空商事が最終報を公表",
+  "rows": [["個人情報", "漏えいの可能性", "red"], ["ギフト", "不正交換を確認", "red"]],
+  "icon": "server",
+  "badge": "warning",
+  "source": "全日空商事"
+}
