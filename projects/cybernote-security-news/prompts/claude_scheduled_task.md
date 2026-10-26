@@ -39,7 +39,7 @@ gh api "repos/Teeeda112923/Wordpress_Post/actions/runs?per_page=10" \
 - 日本の個人・企業に広く普及・認知された製品／サービスである
 - 一次情報での公表日から14日以内である（14日を過ぎた未処理候補も記事化しない）
 
-CVSS基本値は、CVEを採番したCNA（製品開発元など）の値を優先し、CNAの値がない場合はNVDの値を使う。記事と候補CSVには、採用した値の評価元（CNA名またはNVD）を書く。
+CVSS基本値は、CVEを採番したCNA（製品開発元など）の値を優先し、CNAの値がない場合はNVDの値を使う。CVSS v3.x の値がない場合は、CVSS v4.0 の値も確認し、v4.0 の基本値が8.0以上なら基準を満たすものとして扱う（2026-10-26 運営者の指示）。記事と候補CSVには、採用した値のCVSS版と評価元（CNA名またはNVD）を書く。
 
 Windows、Microsoft 365、Chrome、Android、Apple、WordPress、AWS、Azure、Google Cloud、Cisco、Fortinet、Palo Alto Networks、VMware、Apache、Ivanti、Citrix、SonicWall等を優先する。航空・医療・産業制御等の限定的な専門製品は自動採用しない。ただしJoomla本体と拡張機能、特にYouTube Galleryは普及度だけで除外しない（CVSS8.0以上と公式検証は必要）。複数CVEのまとめでも主題CVEがKEV掲載または8.0以上であること。KEV未掲載でCVSSが未検証または8.0未満のもの、知名度や適用範囲が不足する情報は件数合わせで採用しない。KEV掲載のCVEでも、日本で普及した製品でなければ採用しない。KEV掲載のCVEは、記事にKEVへの掲載日と、確認できたCVSSの値・評価元を書く。
 
