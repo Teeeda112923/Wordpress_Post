@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "source_name": "render_eyecatch.py",
-  "source_visual_hash": "4f407e40438543a12cd644b36d2a2d0b5793432b7c8b74cb6cc424c059415884",
-  "final_visual_hash": "4f407e40438543a12cd644b36d2a2d0b5793432b7c8b74cb6cc424c059415884",
-  "final_sha256": "7975c63890d09ced762b2dfc0692f1bfb8b54762753961271df127b08fc24641",
+  "source_name": "iac-cicd-eyecatch-3x2.png",
+  "source_visual_hash": "028b22c1a240866ccb7867c343e763276727dc431b4773b173c81261b8f80a11",
+  "final_visual_hash": "028b22c1a240866ccb7867c343e763276727dc431b4773b173c81261b8f80a11",
+  "final_sha256": "415b174f1d63576dd2037b5bfff86d6bd39ecf6604318a6884960b93765ce88f",
   "width": 1200,
   "height": 800
 }
