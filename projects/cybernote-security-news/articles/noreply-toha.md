@@ -147,11 +147,10 @@ noreplyは、大手のネットサービスや銀行、通販サイトなどが�
 |---|---|---|
 | Google | no-reply@accounts.google.com など | Googleアカウントの画面 |
 | 楽天カード | @mail.rakuten-card.co.jp | 楽天カードアプリ、楽天e-NAVI |
-| Amazon | ― | メッセージセンター |
+| Amazon | @amazon.co.jp（表示は偽装できるため参考程度） | メッセージセンター |
 
-Googleについては、[no-reply@accounts.google.comは本物?正規アドレスでも偽物がある見分け方](https://www.cybernote.click/2026/10/04/no-reply-accounts-google-com-honmono/)で、他の送信元アドレスも紹介しています。楽天カードは、一部のメールを別のドメインから送ることもあると案内しています。Amazonは、送信元を見るよりも、メッセージセンターに同じ内容が届いているかを照合する方法が確実です。
+Googleについては、[no-reply@accounts.google.comは本物?正規アドレスでも偽物がある見分け方](https://www.cybernote.click/2026/10/04/no-reply-accounts-google-com-honmono/)で、他の送信元アドレスも紹介しています。楽天カードは、一部のメールを別のドメインから送ることもあると案内しています。Amazonは、送信元を見るよりも、メッセージセンターでの照合が確実です。詳しくは[Amazonから届いたメールの確認方法](https://www.cybernote.click/2026/10/27/amazon-mail-honmono/)で解説しています。
 
-<!-- 内部リンク候補：A-1「Amazonの送信元アドレスと詐欺メール」／アンカー「Amazonから届いたメールの確認方法」 -->
 <!-- 内部リンク候補：A-2「Apple・iCloudの送信元アドレス」／アンカー「Appleから届いたメールの確認方法」 -->
 <!-- 内部リンク候補：A-3「楽天IDの送信元アドレス」／アンカー「楽天から届いたメールの確認方法」 -->
 
