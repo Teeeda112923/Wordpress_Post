@@ -1,0 +1,8 @@
+state=published
+post_id=9051
+post_url=https://www.cybernote.click/2026/10/28/onamae-desktop-cloud-followup-2026/
+featured_media=9050
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/onamae-desktop-cloud-followup-2026-4.png
+geo_faq=3
+geo_sources=6
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/40628930657
