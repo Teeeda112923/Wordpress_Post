@@ -1,0 +1,8 @@
+state=published
+post_id=9069
+post_url=https://www.cybernote.click/2026/10/28/idcf-cloud-ransomware-final-report-2026/
+featured_media=9068
+media_source=https://www.cybernote.click/wp-content/uploads/2026/10/idcf-cloud-ransomware-final-report-2026.png
+geo_faq=6
+geo_sources=3
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/40664585599
