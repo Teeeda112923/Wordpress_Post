@@ -150,9 +150,8 @@ noreplyは、大手のネットサービスや銀行、通販サイトなどが�
 | Amazon | @amazon.co.jp（表示は偽装できるため参考程度） | メッセージセンター |
 | Apple | 公式の一覧なし（apple.comで終わるドメインが一般的） | 設定アプリ、購入履歴 |
 
-Googleについては、[no-reply@accounts.google.comは本物?正規アドレスでも偽物がある見分け方](https://www.cybernote.click/2026/10/04/no-reply-accounts-google-com-honmono/)で、他の送信元アドレスも紹介しています。楽天カードは、一部のメールを別のドメインから送ることもあると案内しています。Amazonは、送信元を見るよりも、メッセージセンターでの照合が確実です。詳しくは[Amazonから届いたメールの確認方法](https://www.cybernote.click/2026/10/27/amazon-mail-honmono/)で、Appleは[Appleから届いたメールの確認方法](https://www.cybernote.click/2026/10/28/apple-mail-honmono/)で解説しています。
+Googleについては、[no-reply@accounts.google.comは本物?正規アドレスでも偽物がある見分け方](https://www.cybernote.click/2026/10/04/no-reply-accounts-google-com-honmono/)で、他の送信元アドレスも紹介しています。楽天カードは、一部のメールを別のドメインから送ることもあると案内しており、詳しくは[楽天から届いたメールの確認方法](https://www.cybernote.click/2026/10/28/rakuten-mail-honmono/)で解説しています。Amazonは、送信元を見るよりも、メッセージセンターでの照合が確実です。詳しくは[Amazonから届いたメールの確認方法](https://www.cybernote.click/2026/10/27/amazon-mail-honmono/)で、Appleは[Appleから届いたメールの確認方法](https://www.cybernote.click/2026/10/28/apple-mail-honmono/)で解説しています。
 
-<!-- 内部リンク候補：A-3「楽天IDの送信元アドレス」／アンカー「楽天から届いたメールの確認方法」 -->
 
 ### noreplyを迷惑メール設定するときの注意
 
