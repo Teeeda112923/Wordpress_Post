@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.10",
+  "title": ["Android", "SMS of Death"],
+  "subtitle": "SMS1通で通話が切断",
+  "lead": "操作不要・緊急通報にも影響",
+  "rows": [["CVE", "発行なし", "red"], ["対策", "セキュリティ更新を確認", "green"]],
+  "icon": "phone",
+  "badge": "warning",
+  "source": "smsofdeath.com"
+}
