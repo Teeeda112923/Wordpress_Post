@@ -28,6 +28,7 @@ PRIMARY_DOMAINS = {
     "trendmicro.com", "aboutamazon.com", "aws.amazon.com", "nato.int",
     "japanpost.jp", "sagawa-exp.co.jp", "park24.co.jp", "timescar.jp", "daiwa.jp",
     "php.net", "rankmath.com",
+    "binance.com",
 }
 
 IMPACT_PATTERNS = {
