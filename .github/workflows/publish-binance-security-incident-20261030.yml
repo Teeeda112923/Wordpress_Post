@@ -21,7 +21,7 @@ env:
   IMAGES_DIR: projects/cybernote-security-news/eyecatches
   RESULTS_DIR: projects/cybernote-security-news/results
   TARGET_NO: '268'
-  SLUG: binance-security-incident-wap-push-dos
+  SLUG: binance-security-incident-2026-10-29
   STATUS_FILE: .github/binance-security-incident-20261030-publication-status.txt
   PYTHONUNBUFFERED: '1'
   WP_BLOCK_RETRY_COUNT: '1'
