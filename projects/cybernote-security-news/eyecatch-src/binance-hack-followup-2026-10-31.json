@@ -1,0 +1,26 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.10",
+  "title": [
+    "Binance不正出金",
+    "【続報】"
+  ],
+  "subtitle": "補填用に63.4億ドルを確保",
+  "lead": "出金は段階的に再開へ",
+  "rows": [
+    [
+      "入金",
+      "通常どおり",
+      "green"
+    ],
+    [
+      "出金",
+      "11月1日ごろ再開",
+      "cyan"
+    ]
+  ],
+  "icon": "server",
+  "badge": "warning",
+  "source": "Binance / CoinDesk"
+}
