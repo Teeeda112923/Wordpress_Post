@@ -1,0 +1,8 @@
+state=published
+post_id=9208
+post_url=https://www.cybernote.click/2026/11/02/openai-model-spec-security-column/
+featured_media=9207
+media_source=https://www.cybernote.click/wp-content/uploads/2026/11/openai-model-spec-security-column.png
+geo_faq=4
+geo_sources=2
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/41423717996
