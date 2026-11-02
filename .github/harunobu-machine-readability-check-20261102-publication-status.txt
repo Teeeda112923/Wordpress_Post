@@ -1,0 +1,8 @@
+state=published
+post_id=9217
+post_url=https://www.cybernote.click/2026/11/02/harunobu-machine-readability-check/
+featured_media=9216
+media_source=https://www.cybernote.click/wp-content/uploads/2026/11/harunobu-machine-readability-check.png
+geo_faq=4
+geo_sources=5
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/41449231140
