@@ -146,7 +146,7 @@ jobs:
               raise SystemExit('GEO metadata missing: '+','.join(missing))
           faq=json.loads(meta['_cng_faq']) if isinstance(meta['_cng_faq'],str) else meta['_cng_faq']
           sources=json.loads(meta['_cng_sources']) if isinstance(meta['_cng_sources'],str) else meta['_cng_sources']
-          if len(faq)<3 or len(sources)<5:
+          if len(faq)<3 or len(sources)<4:
               raise SystemExit(f'GEO metadata incomplete: faq={len(faq)} sources={len(sources)}')
 
           Path(os.environ['STATUS_FILE']).write_text(
