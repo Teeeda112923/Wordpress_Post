@@ -1,0 +1,8 @@
+state=published
+post_id=9189
+post_url=https://www.cybernote.click/2026/11/02/insta-nottori-taisho/
+featured_media=9188
+media_source=https://www.cybernote.click/wp-content/uploads/2026/11/insta-nottori-taisho.png
+geo_faq=5
+geo_sources=4
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/41801409484
