@@ -17,7 +17,7 @@ CyberNoteのセキュリティニュースを、【候補収集→事実確認�
 
 ## 0. 実行前確認
 
-最新の `main`、`projects/cybernote-security-news/data/news_candidates.csv`、`news_ledger.csv`、既存記事・アイキャッチ、当日の生成・公開記事数、記事番号の最大値、`article_quality_check.py`、`geo_article_quality_check.py`、関連GitHub Actionsとその最新実行状態を確認する。
+最新の `main`、`projects/cybernote-security-news/data/news_candidates.csv`、`news_ledger.csv`、`zero_wire_tracking.csv`、既存記事・アイキャッチ、当日の生成・公開記事数、記事番号の最大値、`article_quality_check.py`、`geo_article_quality_check.py`、関連GitHub Actionsとその最新実行状態を確認する。
 
 ```bash
 gh api "repos/Teeeda112923/Wordpress_Post/actions/runs?per_page=10" \
@@ -54,6 +54,22 @@ CVEの公表直後で、開発元の公告が重要度（Critical等）を示す
 ### 候補の入口として使える二次情報
 
 セキュリティ対策Lab（合同会社ロケットボーイズ、rocket-boys.co.jp/security-measures-lab）などの国内セキュリティ報道は、候補を見つける入口として使ってよい（2026-10-26 運営者の指示）。WebSearchで `allowed_domains` に指定して直近の記事を拾う。ただし記事の根拠や採用判断には使わない。KEV掲載・CVSS・公表日・対象製品・修正版は、必ず一次情報（開発元、CISA、NVD、JVN、JPCERT/CC等）のURLで確認し、確認できないものは採用しない。出典欄にも二次情報だけを載せない。
+
+### Cloudflare Zero Wireの新着（2026-11-04 運営者の指示）
+
+Cloudflare Radarの脆弱性情報フィード Zero Wire（https://radar.cloudflare.com/security/zero-wire）に新しく載ったブリーフィングは、記事化の対象にする。紹介記事はNo.289（slug `cloudflare-zero-wire`）。
+
+1. 毎回、候補収集の最初に新着を確認する。radar.cloudflare.com は WebFetch がボット対策で拒否されるため、WebSearch に `allowed_domains: ["radar.cloudflare.com"]` を指定して「Zero Wire」「Zero Wire Needs attention」などで検索し、一覧ページ（`/security/zero-wire`）と個別ページ（`/security/zero-wire/<名前>`）を拾う。WebFetch は一覧ページに1回だけ試し、拒否されたら再試行しない。補助として、Cloudflare公式ブログ・@CloudflareRadar の告知もWebSearchで確認する
+2. 拾ったブリーフィングを `data/zero_wire_tracking.csv` と、ブリーフィング名・URL・CVE番号で突き合わせる。台帳にないものだけを「新着」とする。台帳の「初期登録」行（監視開始時点で掲載済みだったもの）は新着ではないため、自動記事化しない
+3. 新着は、候補CSVに備考「Zero Wire新着」として追記し、台帳にも行を末尾追記する（状態=未処理）。台帳の既存行は、自分が追記した行の「状態」「CyberNote記事No」「備考」だけ更新してよい
+4. 採用条件の特例: Zero Wire新着は、自動採用の条件のうち「KEV掲載またはCVSS 8.0以上」と「日本で普及した製品」を問わない（Cloudflareが重大な脆弱性として選別済みのため）。CVEがない事象（証明書の侵害など）も対象にし、その場合は脆弱性以外の分類で書く。ただし次は通常どおり守る
+   - Zero Wireは候補の入口であり、根拠ではない。CVE番号、対象製品・版、修正版、CVSS、悪用状況は、CVEレコード、NVD、開発元のアドバイザリ、CISA、JVN、JPCERT/CC等の一次情報で確認する。確認できない項目は記事に「未確認」と書き、ブリーフィングの記述だけを根拠に断定しない
+   - 主要な事実（対象製品と修正方法）を一次情報で確認できない場合は記事化を見送り、台帳の状態を「見送り」、備考に理由を書く
+   - 重複検証（2.の `articles/` の grep と WordPress側の検索）は通常どおり行う。既存記事があれば新規記事にせず、台帳の状態を「記事化済み」（記事Noを記入）にし、Zero Wireに載った事実や新しい対応情報があれば「追記候補」として報告する
+   - 鮮度は、CVEの公表日ではなく台帳に新着として登録した日から14日以内で判定する
+5. 新着が複数ある場合も1回の実行で作る記事は1本。残りは台帳の状態を「未処理」のまま次の枠へ回す。当日の上限4件には含める
+6. 記事の書き方: 脆弱性の記事なら通常の仕様（`## 脆弱性の概要` の表など）に従う。本文で「CloudflareのZero Wireでも要対応として取り上げられている」ことに一度だけ触れ、紹介記事 `https://www.cybernote.click/2026/11/04/cloudflare-zero-wire/`（公開後のURLを台帳で確認する）を内部リンクの1本にする。sourcesには一次情報に加えて該当ブリーフィングのURLを載せてよい。WAFのグラフの数値は攻撃件数や被害件数として書かず、WAFをパッチの代わりのように書かない
+7. 公開できたら台帳の状態を「記事化済み」、CyberNote記事Noを記入する
 
 ### WordPressプラグインの脆弱性
 
@@ -92,10 +108,11 @@ push の前に `git pull --rebase origin main` で最新を取り込み、競合
 新規候補と既存未処理候補（公表から14日以内のもの）の中から、次の順で優先度を付け、1件だけ選ぶ。
 
 1. CISAのKEV（既知の悪用された脆弱性カタログ）に掲載されている
-2. 開発元・公的機関の一次情報で実際の悪用が確認されている
-3. Microsoftの月例更新（Patch Tuesday）の対象である
-4. 製品の需要（日本での利用者・導入企業の多さ）が大きい。WordPressプラグインは、WordPress.orgの有効インストール数の多さで比べる
-5. 公表が新しい
+2. Cloudflare Zero Wireの新着である（要対応に載ったものを参考に載ったものより先にする）
+3. 開発元・公的機関の一次情報で実際の悪用が確認されている
+4. Microsoftの月例更新（Patch Tuesday）の対象である
+5. 製品の需要（日本での利用者・導入企業の多さ）が大きい。WordPressプラグインは、WordPress.orgの有効インストール数の多さで比べる
+6. 公表が新しい
 
 同順位のときは、一次情報の充実度と既存記事との差分価値で決める。公開済み・下書き済み・生成済みのCVEや同一事象を二重に記事化しない。既存記事と同じCVE・事象で、修正版の追加、悪用の確認、CVSSの改定などの新しい事実が一次情報で確認できた場合は、既存記事は変更せず、実行結果報告に「追記候補」として記事番号・新しい事実・一次情報URLを書く。公式情報が未確認の攻撃・情報漏えい・PoC・悪用・犯行声明を事実として断定しない。
 
@@ -220,6 +237,7 @@ gh api -X POST \
 次を簡潔に報告する。
 
 - 候補の新規追加数、選定・除外理由、一次ソースとCVSS検証元（CNAかNVDか）
+- Zero Wireの新着確認の結果（確認方法、新着の件数と名前、記事化・見送り・次回へ回した理由。確認できなかった場合はその理由）
 - 追記候補（該当があれば、既存記事番号・新しい事実・一次情報URL）
 - 記事番号、タイトル、スラッグ
 - 本文・リード・まとめ等の実測値、品質検査の終了コードとエラー数

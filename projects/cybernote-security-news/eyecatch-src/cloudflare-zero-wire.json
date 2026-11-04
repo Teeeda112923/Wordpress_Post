@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.11.03",
+  "title": ["Cloudflare", "Zero Wire"],
+  "subtitle": "重大な脆弱性の公開フィード",
+  "lead": "影響と対応手順を無料で確認",
+  "note": "WAFはパッチの代わりにならない",
+  "rows": [["要対応", "今すぐ確認", "red"], ["参考", "方針が確定", "cyan"]],
+  "icon": "cloud",
+  "badge": "shield",
+  "source": "Cloudflare"
+}

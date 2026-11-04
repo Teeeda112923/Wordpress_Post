@@ -1,0 +1,7 @@
+確認日,ブリーフィング名,URL,区分,CVE,状態,CyberNote記事No,備考
+2026-11-04,Linux IPv4 TCP use-after-free,https://radar.cloudflare.com/security/zero-wire/linux-ipv4-tcp-use-after-free,要対応,CVE-2026-98432,初期登録,,監視開始時点で掲載済み。CyberNote未記事化。新着ではないため自動記事化の対象外
+2026-11-04,php2shell,https://radar.cloudflare.com/security/zero-wire,要対応,"CVE-2026-109618, CVE-2026-109619, CVE-2026-115560",記事化済み,"216, 242",監視開始時点で掲載済み
+2026-11-04,eMudhra certificate compromise,https://radar.cloudflare.com/security/zero-wire,要対応,,記事化済み,226,監視開始時点で掲載済み。CVE番号は未確認
+2026-11-04,Brotli decoder flaw (Node.js ほか),https://radar.cloudflare.com/security/zero-wire,要対応,,初期登録,,監視開始時点で掲載済み。CVE番号は未確認。No.241（HTTP2Shell）と同一かは未照合
+2026-11-04,Citrix NetScaler command execution,https://radar.cloudflare.com/security/zero-wire,要対応,,初期登録,,監視開始時点で掲載済み。CVE番号は未確認
+2026-11-04,WordPress SQL injection and RCE,https://radar.cloudflare.com/security/zero-wire,参考,,初期登録,,監視開始時点で掲載済み。CVE番号は未確認
