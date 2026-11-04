@@ -1,0 +1,8 @@
+state=published
+no182_post_id=8637
+no182_post_url=https://www.cybernote.click/2026/10/13/gitlab-cve-2026-97229-ci-cd-regex-rce-update/
+no182_media=https://www.cybernote.click/wp-content/uploads/2026/10/gitlab-cve-2026-97229-ci-cd-regex-rce-update.png
+no266_post_id=9122
+no266_post_url=https://www.cybernote.click/2026/10/30/cisco-asa-ftd-cve-2026-76418-ssl-vpn-secondary-auth-dos-exploited/
+no266_media=https://www.cybernote.click/wp-content/uploads/2026/10/cisco-asa-ftd-cve-2026-76418-ssl-vpn-secondary-auth-dos-exploited.png
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/41771560236
