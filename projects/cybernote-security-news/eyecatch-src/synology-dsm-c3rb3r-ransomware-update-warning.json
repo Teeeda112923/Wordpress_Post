@@ -1,0 +1,10 @@
+{
+  "layout": "stack",
+  "tone": "alert",
+  "title": ["Synology DSM", "ランサムウェア"],
+  "status": "古いDSMを標的に攻撃を確認",
+  "action": "DSMを最新版へ更新",
+  "action_accent": "DSM",
+  "icon": "server",
+  "badge": "warning"
+}
