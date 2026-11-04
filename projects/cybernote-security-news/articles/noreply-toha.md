@@ -151,8 +151,10 @@ noreplyは、大手のネットサービスや銀行、通販サイトなどが�
 | Apple | 公式の一覧なし（apple.comで終わるドメインが一般的） | 設定アプリ、購入履歴 |
 | 宅配便（ヤマト・佐川・日本郵便） | ヤマト運輸はSMSで不在を知らせない | 各社の公式アプリ、追跡ページ |
 | 国税庁 | SMSにURLを載せた案内は送らない | e-Taxのメッセージボックス |
+| えきねっと | @eki-net.com（送信元は偽装されることがある） | 公式サイト（https://www.eki-net.com） |
+| 東京電力 | 料金の支払いをメールのリンクで求める連絡に注意 | くらしTEPCO web |
 
-Googleについては、[no-reply@accounts.google.comは本物?正規アドレスでも偽物がある見分け方](https://www.cybernote.click/2026/10/04/no-reply-accounts-google-com-honmono/)で、他の送信元アドレスも紹介しています。楽天カードは、一部のメールを別のドメインから送ることもあると案内しており、詳しくは[楽天から届いたメールの確認方法](https://www.cybernote.click/2026/10/28/rakuten-mail-honmono/)で解説しています。Amazonは、送信元を見るよりも、メッセージセンターでの照合が確実です。詳しくは[Amazonから届いたメールの確認方法](https://www.cybernote.click/2026/10/27/amazon-mail-honmono/)で、Appleは[Appleから届いたメールの確認方法](https://www.cybernote.click/2026/10/28/apple-mail-honmono/)で解説しています。宅配便の不在通知は[宅配便の不在通知は本物？](https://www.cybernote.click/2026/11/02/takuhai-fuzai-sagi/)、国税庁を名乗る連絡は[国税庁からのメールは本物？](https://www.cybernote.click/2026/11/02/kokuzeicho-sagi-mail/)で確認方法を紹介しています。
+Googleについては、[no-reply@accounts.google.comは本物?正規アドレスでも偽物がある見分け方](https://www.cybernote.click/2026/10/04/no-reply-accounts-google-com-honmono/)で、他の送信元アドレスも紹介しています。楽天カードは、一部のメールを別のドメインから送ることもあると案内しており、詳しくは[楽天から届いたメールの確認方法](https://www.cybernote.click/2026/10/28/rakuten-mail-honmono/)で解説しています。Amazonは、送信元を見るよりも、メッセージセンターでの照合が確実です。詳しくは[Amazonから届いたメールの確認方法](https://www.cybernote.click/2026/10/27/amazon-mail-honmono/)で、Appleは[Appleから届いたメールの確認方法](https://www.cybernote.click/2026/10/28/apple-mail-honmono/)で解説しています。宅配便の不在通知は[宅配便の不在通知は本物？](https://www.cybernote.click/2026/11/02/takuhai-fuzai-sagi/)、国税庁を名乗る連絡は[国税庁からのメールは本物？](https://www.cybernote.click/2026/11/02/kokuzeicho-sagi-mail/)で確認方法を紹介しています。えきねっとは[えきねっとからのメールは本物？](https://www.cybernote.click/2026/11/04/ekinet-sagi-mail/)、東京電力は[東京電力からのメールは本物？](https://www.cybernote.click/2026/11/04/tepco-sagi-mail/)で解説しています。
 
 
 ### noreplyを迷惑メール設定するときの注意

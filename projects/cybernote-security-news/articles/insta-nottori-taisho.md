@@ -149,7 +149,7 @@ Metaによると、Instagramがアカウントについて連絡する場合、�
 - DMやメールのリンクから、Instagramにログインしない
 - ログイン中の端末と場所を、ときどき確認する
 
-なかでも、二段階認証の設定は、乗っ取りを防ぐうえで特に効果の大きい対策です。設定はアカウントセンターのパスワードとセキュリティから、数分で行えます。認証アプリかSMSのどちらかを選んで設定しておきましょう。LINEの乗っ取りについては[LINE乗っ取りの確認方法と対処](https://www.cybernote.click/2026/10/29/line-nottori-taisho/)で、メールの送信元の見方は[noreplyとは？](https://www.cybernote.click/2026/10/26/noreply-toha/)で解説しています。
+なかでも、二段階認証の設定は、乗っ取りを防ぐうえで特に効果の大きい対策です。設定はアカウントセンターのパスワードとセキュリティから、数分で行えます。認証アプリかSMSのどちらかを選んで設定しておきましょう。LINEの乗っ取りについては[LINE乗っ取りの確認方法と対処](https://www.cybernote.click/2026/10/29/line-nottori-taisho/)で、Xの乗っ取りについては[X乗っ取りの確認方法と対処](https://www.cybernote.click/2026/11/04/x-nottori-taisho/)で、メールの送信元の見方は[noreplyとは？](https://www.cybernote.click/2026/10/26/noreply-toha/)で解説しています。
 
 ## まとめ
 
