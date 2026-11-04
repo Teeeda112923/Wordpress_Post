@@ -18,7 +18,7 @@ CyberNoteで当日公開する短いセキュリティニュースを作成す�
 
 WordPressプラグインは、WordPress.orgの有効インストール数が10万以上なら、日本で普及した製品とみなす。10万未満でも、CISAのKEV掲載または一次情報で実際の悪用が確認され、有効インストール数が1万以上なら採用してよい。KEV未掲載ならCVSS 8.0以上の条件は変えない。WPカタログ（wpcatalog.jp）は使わない。詳細は別の一次情報で調べて書く。手順は `claude_scheduled_task.md` の「WordPressプラグインの脆弱性」に従う。
 
-Cloudflare Zero Wireに新しく載ったブリーフィングは、上の1と2を問わず記事化の対象にする（一次情報での事実確認、重複防止、14日以内の条件は残る）。手順は `claude_scheduled_task.md` の「Cloudflare Zero Wireの新着」に従う。
+Cloudflare Zero Wireに新しく載ったブリーフィングは、KEV掲載と同じく「重要度が高い」ことの物差しとして扱い、上の1と2を満たしていなくても記事化の対象にする（一次情報での事実確認、重複防止、14日以内の条件は残る）。手順は `claude_scheduled_task.md` の「Cloudflare Zero Wireの新着」に従う。
 
 必須条件を満たした候補について、次の順で比較する。
 
