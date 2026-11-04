@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.11",
+  "title": ["個人情報の漏えい", "相談窓口を強化"],
+  "subtitle": "IPAが個人向けの相談受付を拡充",
+  "lead": "漏えいした情報の種類別に対処",
+  "rows": [["電話", "03-5978-7509", "cyan"], ["受付", "平日10時〜17時", "green"]],
+  "icon": "phone",
+  "badge": "shield",
+  "source": "IPA"
+}
