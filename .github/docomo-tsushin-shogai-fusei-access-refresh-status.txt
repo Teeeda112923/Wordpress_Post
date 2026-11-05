@@ -4,5 +4,5 @@ post_url=https://www.cybernote.click/2026/11/05/docomo-tsushin-shogai-fusei-acce
 featured_media=9279
 media_source=https://www.cybernote.click/wp-content/uploads/2026/11/docomo-tsushin-shogai-fusei-access-202611.png
 geo_faq=5
-geo_sources=5
-run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/41983521726
+geo_sources=7
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/42013267902
