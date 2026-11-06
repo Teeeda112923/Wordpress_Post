@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11",
+  "title": ["SMBCコンシューマー", "ファイナンス"],
+  "subtitle": "保証システムへ不正アクセス",
+  "figure": "最大32万118人",
+  "lead": "個人情報が外部に送信",
+  "rows": [["発表", "2026年11月5日", "cyan"], ["二次被害", "現時点で未確認", "green"]],
+  "icon": "database",
+  "badge": "warning",
+  "source": "SMBCコンシューマーファイナンス"
+}
