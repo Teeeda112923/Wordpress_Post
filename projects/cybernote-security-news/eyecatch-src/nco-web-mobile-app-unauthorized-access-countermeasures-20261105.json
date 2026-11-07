@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.11",
+  "title": ["国家サイバー統括室", "が注意喚起"],
+  "subtitle": "ウェブ・モバイルアプリの基本対策",
+  "figure": "11月5日 公表",
+  "lead": "個人情報を扱う事業者向け",
+  "rows": [["対象", "ウェブサイト・アプリ", "cyan"], ["柱", "運用・開発・委託先", "green"]],
+  "icon": "document",
+  "badge": "shield",
+  "source": "内閣官房 国家サイバー統括室"
+}
