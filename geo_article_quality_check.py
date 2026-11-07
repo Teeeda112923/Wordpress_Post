@@ -366,6 +366,9 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
     core_count = chars(body)
+    # 脆弱性以外の記事（cve欄が空）は、本文コアとH2直下説明の字数上限を適用しない（2026-11-07 運営者の指示）。
+    # 下限は維持する。必要に応じてH3見出しで構成してよい。
+    non_vuln = not raw.get("cve", "").strip()
     # User-approved, single-article exceptions: preserve specifically approved long-form explainers.
     # All structural, sourcing and image quality rules stay enforced.
     approved_longform = (
@@ -393,9 +396,9 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字未満です"
             f"（{core_count}字、保存前に内容を補足して再校正してください）"
         )
-    elif core_count > CORE_HARD_MAX and not approved_longform:
+    elif core_count > CORE_HARD_MAX and not approved_longform and not non_vuln:
         errors.append(f"本文コアが絶対上限{CORE_HARD_MAX}字を超えています（{core_count}字）")
-    elif core_count > CORE_TARGET_MAX and not approved_longform:
+    elif core_count > CORE_TARGET_MAX and not approved_longform and not non_vuln:
         warnings.append(
             f"本文コアが目標{CORE_TARGET_MIN}〜{CORE_TARGET_MAX}字を超えています"
             f"（{core_count}字、重複や冗長表現を再校正してください）"
@@ -451,7 +454,7 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     for title, section in sections:
         if title == "まとめ" or compact(title) in FORBIDDEN_BODY_H2:
             continue
-        check_range(f"H2『{title}』直下リード", chars(h2_direct_lead(section)), 100, 150)
+        check_range(f"H2『{title}』直下リード", chars(h2_direct_lead(section)), 100, 10**6 if non_vuln else 150)
 
     errors.extend(list_table_errors(body))
     return errors, warnings
