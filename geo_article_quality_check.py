@@ -54,6 +54,13 @@ CORE_HARD_MIN = 1000
 CORE_TARGET_MIN = 1300
 CORE_TARGET_MAX = 1600
 CORE_HARD_MAX = 1800
+# 長文モード（フロントマター format: longform）の基準（2026-11-09 運営者の指示）。
+# 個別記事ごとの例外リストに頼らず、長文SEO記事もこのゲートを通して公開する。
+LONGFORM_HARD_MIN = 1800
+LONGFORM_HARD_MAX = 8000
+LONGFORM_MIN_FAQ = 3
+LONGFORM_MIN_SOURCES = 3
+LONGFORM_MIN_H2 = 3
 
 
 def compact(value: str) -> str:
@@ -366,6 +373,23 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
     check_range("冒頭リード", chars(intro_text(body)), 250, 300)
 
     core_count = chars(body)
+    longform = value_line(front, "format").strip().lower() == "longform"
+    if longform:
+        if core_count < LONGFORM_HARD_MIN:
+            errors.append(
+                f"長文モードの本文コアが{LONGFORM_HARD_MIN}字未満です（{core_count}字）。通常記事として作成してください"
+            )
+        if core_count > LONGFORM_HARD_MAX:
+            errors.append(f"長文モードの本文コアが上限{LONGFORM_HARD_MAX}字を超えています（{core_count}字）")
+        if len(raw.get("faq", [])) < LONGFORM_MIN_FAQ:
+            errors.append(f"長文モードはフロントマターfaqが{LONGFORM_MIN_FAQ}問以上必要です")
+        if len(raw.get("sources", [])) < LONGFORM_MIN_SOURCES:
+            errors.append(f"長文モードはフロントマターsourcesが{LONGFORM_MIN_SOURCES}件以上必要です")
+        h2_titles = [compact(title) for title, _ in h2_sections(body)]
+        if len(h2_titles) < LONGFORM_MIN_H2:
+            errors.append(f"長文モードはH2見出しが{LONGFORM_MIN_H2}つ以上必要です")
+        if compact("まとめ") not in h2_titles:
+            errors.append("長文モードは『## まとめ』が必要です")
     # 脆弱性以外の記事（cve欄が空）は、本文コアとH2直下説明の字数上限を適用しない（2026-11-07 運営者の指示）。
     # 下限は維持する。必要に応じてH3見出しで構成してよい。
     non_vuln = not raw.get("cve", "").strip()
@@ -389,7 +413,9 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             and "https://www.cyber.go.jp/pdf/news/20261009advisory.pdf" in front
         )
     )
-    if core_count < CORE_HARD_MIN:
+    if longform:
+        pass  # 長文モードの字数は上で判定済み
+    elif core_count < CORE_HARD_MIN:
         errors.append(f"本文コアが絶対最低値{CORE_HARD_MIN}字未満です（{core_count}字）")
     elif core_count < CORE_TARGET_MIN:
         warnings.append(

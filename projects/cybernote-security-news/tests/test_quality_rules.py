@@ -142,6 +142,35 @@ class QualityRuleTests(unittest.TestCase):
             any(error.startswith("本文コアが絶対上限1800字を超え") for error in errors)
         )
 
+    def test_longform_mode_allows_long_articles_with_required_metadata(self) -> None:
+        front = valid_front(faq_count=3) + '\nformat: "longform"'
+        front = front.replace(
+            "sources:\n",
+            "sources:\n"
+            '  - title: "一次情報2"\n    url: "https://www.cisa.gov/a"\n    publisher: "CISA"\n'
+            '  - title: "一次情報3"\n    url: "https://nvd.nist.gov/b"\n    publisher: "NVD"\n',
+        )
+        long = valid_body().replace("詳" * 300, "詳" * 280 + "\n\n" + "詳" * 280 + "\n\n" + "詳" * 280 * 1)
+        long = long.replace("補" * 300, ("補" * 280 + "\n\n") * 4 + "補" * 200)
+        errors, _ = quality.geo_errors(front, long)
+        self.assertFalse(any("絶対上限" in error for error in errors), errors)
+        self.assertFalse(any(error.startswith("長文モード") for error in errors), errors)
+
+        # 通常記事は従来どおり1800字超でエラー
+        errors, _ = quality.geo_errors(valid_front(faq_count=3), long)
+        self.assertTrue(any("絶対上限1800字を超え" in error for error in errors))
+
+    def test_longform_mode_rejects_missing_requirements(self) -> None:
+        front = valid_front(faq_count=2) + '\nformat: "longform"'
+        errors, _ = quality.geo_errors(front, valid_body())
+        self.assertTrue(any("長文モードの本文コアが1800字未満" in error for error in errors))
+        self.assertTrue(any("faqが3問以上必要" in error for error in errors))
+        self.assertTrue(any("sourcesが3件以上必要" in error for error in errors))
+
+        no_summary = valid_body().replace("## まとめ", "## 総括")
+        errors, _ = quality.geo_errors(front, no_summary)
+        self.assertTrue(any("『## まとめ』が必要" in error for error in errors))
+
     def test_core_target_bands_warn_and_target_passes(self) -> None:
         self.assertEqual([], quality.geo_errors(valid_front(), valid_body())[1])
 
