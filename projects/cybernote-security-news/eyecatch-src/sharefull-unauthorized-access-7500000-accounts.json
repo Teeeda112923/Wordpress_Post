@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11",
+  "title": ["スキマバイト", "シェアフル"],
+  "subtitle": "社内管理システムへ不正アクセス",
+  "figure": "最大約750万件",
+  "lead": "個人アカウントの情報が流出の恐れ",
+  "rows": [["公表", "2026年11月9日", "cyan"], ["本人確認書類", "対象外", "green"]],
+  "icon": "phone",
+  "badge": "warning",
+  "source": "シェアフル株式会社"
+}
