@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11.11",
+  "title": ["ドコモ", "5G SA通信障害"],
+  "subtitle": "11月5日に続き2度目",
+  "lead": "通話・データ通信・SMSが使いづらい状態",
+  "rows": [["発生", "11月11日 10時34分頃", "red"], ["4G・MVNO", "影響なし", "green"]],
+  "icon": "phone",
+  "badge": "warning",
+  "source": "NTTドコモ"
+}
