@@ -5,3 +5,5 @@
 2026-11-04,Brotli decoder flaw (Node.js ほか),https://radar.cloudflare.com/security/zero-wire,要対応,,初期登録,,監視開始時点で掲載済み。CVE番号は未確認。No.241（HTTP2Shell）と同一かは未照合
 2026-11-04,Citrix NetScaler command execution,https://radar.cloudflare.com/security/zero-wire,要対応,,初期登録,,監視開始時点で掲載済み。CVE番号は未確認
 2026-11-04,WordPress SQL injection and RCE,https://radar.cloudflare.com/security/zero-wire,参考,,初期登録,,監視開始時点で掲載済み。CVE番号は未確認
+2026-11-11,node2shell,https://radar.cloudflare.com/security/zero-wire/node2shell,未確認（ページ本文はWebFetch不可）,CVE-2026-111497,記事化済み,241,2026-11-11の確認で新着として一覧に出現。WebSearchの結果から既存記事（No.241）と同一事象と判断。新規記事化せず。追記候補なし
+2026-11-11,*sshole: OpenSSH password bypass on musl Linux,https://radar.cloudflare.com/security/zero-wire/sshole,未確認（ページ本文はWebFetch不可）,CVE-2026-123158,記事化済み,298,2026-11-11の確認で新着として一覧に出現。WebSearchの結果から既存記事（No.298）と同一事象と判断。新規記事化せず。追記候補なし
