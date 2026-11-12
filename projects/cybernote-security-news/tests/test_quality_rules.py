@@ -184,6 +184,44 @@ class QualityRuleTests(unittest.TestCase):
         self.assertFalse(any("本文コア" in error for error in errors))
         self.assertTrue(any("目標1300〜1600字を超え" in warning for warning in warnings))
 
+    def test_vulnerability_articles_from_2026_11_13_use_2500_3000_target(self) -> None:
+        # 2026-11-12 運営者の指示: 脆弱性記事は目標2500〜3000字、2000字未満・3300字超はエラー
+        front = valid_front() + '\ndate: "2026-11-13"'
+
+        def core_messages(detail_chars: int) -> tuple[list[str], list[str]]:
+            body = valid_body().replace("詳" * 300, "詳" * detail_chars)
+            errors, warnings = quality.geo_errors(front, body)
+            return (
+                [e for e in errors if "本文コア" in e],
+                [w for w in warnings if "本文コア" in w],
+            )
+
+        errors, warnings = core_messages(1800)  # 約2900字
+        self.assertEqual(([], []), (errors, warnings))
+
+        errors, _ = core_messages(300)  # 約1400字
+        self.assertTrue(any("最低値2000字未満" in e for e in errors), errors)
+
+        errors, warnings = core_messages(1100)  # 約2200字
+        self.assertEqual([], errors)
+        self.assertTrue(any("目標2500〜3000字未満" in w for w in warnings), warnings)
+
+        errors, warnings = core_messages(2100)  # 約3200字
+        self.assertEqual([], errors)
+        self.assertTrue(any("目標2500〜3000字を超え" in w for w in warnings), warnings)
+
+        errors, _ = core_messages(2500)  # 約3600字
+        self.assertTrue(any("絶対上限3300字を超え" in e for e in errors), errors)
+
+    def test_vulnerability_articles_before_2026_11_13_keep_previous_limits(self) -> None:
+        front = valid_front() + '\ndate: "2026-11-12"'
+        errors, warnings = quality.geo_errors(front, valid_body())
+        self.assertEqual([], errors)
+        self.assertEqual([], warnings)
+        long = valid_body().replace("詳" * 300, "詳" * 850)
+        errors, _ = quality.geo_errors(front, long)
+        self.assertTrue(any("絶対上限1800字を超え" in error for error in errors))
+
     def test_duplicate_internal_links_are_rejected(self) -> None:
         body = valid_body().replace("https://www.cybernote.click/c/", "https://www.cybernote.click/a/")
         errors, _ = quality.geo_errors(valid_front(), body)

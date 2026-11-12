@@ -57,6 +57,15 @@ CORE_TARGET_MAX = 1600
 CORE_HARD_MAX = 1800
 # 長文モード（フロントマター format: longform）の基準（2026-11-09 運営者の指示）。
 # 個別記事ごとの例外リストに頼らず、長文SEO記事もこのゲートを通して公開する。
+# 脆弱性記事（cve あり）の字数基準（2026-11-12 運営者の指示）。
+# 2026-11-13 以降の日付の脆弱性記事に適用する。目標2500〜3000字、
+# 一次情報が少ない場合は2000字まで許容（警告）、2000字未満と3300字超はエラー。
+# それより前の記事は従来の基準（CORE_*）のまま判定する。
+VULN_LONG_FROM_DATE = "2026-11-13"
+VULN_HARD_MIN = 2000
+VULN_TARGET_MIN = 2500
+VULN_TARGET_MAX = 3000
+VULN_HARD_MAX = 3300
 LONGFORM_HARD_MIN = 1800
 LONGFORM_HARD_MAX = 8000
 LONGFORM_MIN_FAQ = 3
@@ -414,8 +423,28 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
             and "https://www.cyber.go.jp/pdf/news/20261009advisory.pdf" in front
         )
     )
+    article_date = value_line(front, "date").strip()[:10]
+    vuln_long = (not non_vuln) and bool(article_date) and article_date >= VULN_LONG_FROM_DATE
     if longform:
         pass  # 長文モードの字数は上で判定済み
+    elif vuln_long:
+        if core_count < VULN_HARD_MIN:
+            errors.append(
+                f"脆弱性記事の本文コアが最低値{VULN_HARD_MIN}字未満です（{core_count}字）。"
+                "水増しせず、一次情報が足りない場合は記事化を見送ってください"
+            )
+        elif core_count > VULN_HARD_MAX:
+            errors.append(f"脆弱性記事の本文コアが絶対上限{VULN_HARD_MAX}字を超えています（{core_count}字）")
+        elif core_count < VULN_TARGET_MIN:
+            warnings.append(
+                f"脆弱性記事の本文コアが目標{VULN_TARGET_MIN}〜{VULN_TARGET_MAX}字未満です"
+                f"（{core_count}字、一次情報で補える事実があれば補足してください。水増しは不可）"
+            )
+        elif core_count > VULN_TARGET_MAX:
+            warnings.append(
+                f"脆弱性記事の本文コアが目標{VULN_TARGET_MIN}〜{VULN_TARGET_MAX}字を超えています"
+                f"（{core_count}字、重複や冗長表現を再校正してください）"
+            )
     elif core_count < CORE_HARD_MIN:
         errors.append(f"本文コアが絶対最低値{CORE_HARD_MIN}字未満です（{core_count}字）")
     elif core_count < CORE_TARGET_MIN:
