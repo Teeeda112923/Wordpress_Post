@@ -1,0 +1,8 @@
+state=published
+post_id=9470
+post_url=https://www.cybernote.click/2026/11/12/epss-toha/
+featured_media=9469
+media_source=https://www.cybernote.click/wp-content/uploads/2026/11/epss-toha.png
+geo_faq=5
+geo_sources=5
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/43222312244
