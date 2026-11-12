@@ -58,10 +58,12 @@ CORE_HARD_MAX = 1800
 # 長文モード（フロントマター format: longform）の基準（2026-11-09 運営者の指示）。
 # 個別記事ごとの例外リストに頼らず、長文SEO記事もこのゲートを通して公開する。
 # 脆弱性記事（cve あり）の字数基準（2026-11-12 運営者の指示）。
-# 2026-11-13 以降の日付の脆弱性記事に適用する。目標2500〜3000字、
-# 一次情報が少ない場合は2000字まで許容（警告）、2000字未満と3300字超はエラー。
-# それより前の記事は従来の基準（CORE_*）のまま判定する。
-VULN_LONG_FROM_DATE = "2026-11-13"
+# 2026-11-12 以降の日付の脆弱性記事に適用する（同日15時枠以降の記事から）。
+# 目標2500〜3000字、一次情報が少ない場合は2000字まで許容（警告）、
+# 2000字未満と3300字超はエラー。それより前の記事と、基準変更前に公開済みの
+# VULN_LONG_EXEMPT_CVES の記事は従来の基準（CORE_*）のまま判定する。
+VULN_LONG_FROM_DATE = "2026-11-12"
+VULN_LONG_EXEMPT_CVES = {"CVE-2026-126187"}  # No.313（基準変更前に公開済み）
 VULN_HARD_MIN = 2000
 VULN_TARGET_MIN = 2500
 VULN_TARGET_MAX = 3000
@@ -424,7 +426,12 @@ def geo_errors(front: str, body: str) -> tuple[list[str], list[str]]:
         )
     )
     article_date = value_line(front, "date").strip()[:10]
-    vuln_long = (not non_vuln) and bool(article_date) and article_date >= VULN_LONG_FROM_DATE
+    vuln_long = (
+        (not non_vuln)
+        and bool(article_date)
+        and article_date >= VULN_LONG_FROM_DATE
+        and raw.get("cve", "").strip() not in VULN_LONG_EXEMPT_CVES
+    )
     if longform:
         pass  # 長文モードの字数は上で判定済み
     elif vuln_long:

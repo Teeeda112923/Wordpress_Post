@@ -184,9 +184,9 @@ class QualityRuleTests(unittest.TestCase):
         self.assertFalse(any("本文コア" in error for error in errors))
         self.assertTrue(any("目標1300〜1600字を超え" in warning for warning in warnings))
 
-    def test_vulnerability_articles_from_2026_11_13_use_2500_3000_target(self) -> None:
+    def test_vulnerability_articles_from_2026_11_12_use_2500_3000_target(self) -> None:
         # 2026-11-12 運営者の指示: 脆弱性記事は目標2500〜3000字、2000字未満・3300字超はエラー
-        front = valid_front() + '\ndate: "2026-11-13"'
+        front = valid_front() + '\ndate: "2026-11-12"'
 
         def core_messages(detail_chars: int) -> tuple[list[str], list[str]]:
             body = valid_body().replace("詳" * 300, "詳" * detail_chars)
@@ -213,8 +213,15 @@ class QualityRuleTests(unittest.TestCase):
         errors, _ = core_messages(2500)  # 約3600字
         self.assertTrue(any("絶対上限3300字を超え" in e for e in errors), errors)
 
-    def test_vulnerability_articles_before_2026_11_13_keep_previous_limits(self) -> None:
-        front = valid_front() + '\ndate: "2026-11-12"'
+    def test_vulnerability_articles_before_2026_11_12_keep_previous_limits(self) -> None:
+        for front in (
+            valid_front() + '\ndate: "2026-11-11"',
+            # 基準変更前に公開済みのNo.313は除外
+            valid_front().replace("CVE-2026-12345", "CVE-2026-126187") + '\ndate: "2026-11-12"',
+        ):
+            self._assert_previous_limits(front)
+
+    def _assert_previous_limits(self, front: str) -> None:
         errors, warnings = quality.geo_errors(front, valid_body())
         self.assertEqual([], errors)
         self.assertEqual([], warnings)
