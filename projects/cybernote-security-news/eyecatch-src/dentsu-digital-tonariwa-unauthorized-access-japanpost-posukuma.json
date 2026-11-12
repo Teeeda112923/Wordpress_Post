@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11",
+  "title": ["電通デジタル", "TONARIWA"],
+  "subtitle": "不正アクセスで情報流出の恐れ",
+  "figure": "ぽすくま停止",
+  "lead": "LINE連携トークンも流出の可能性",
+  "rows": [["公表", "2026年11月11日", "cyan"], ["決済情報", "対象外", "green"]],
+  "icon": "cloud",
+  "badge": "warning",
+  "source": "電通デジタル・日本郵便"
+}
