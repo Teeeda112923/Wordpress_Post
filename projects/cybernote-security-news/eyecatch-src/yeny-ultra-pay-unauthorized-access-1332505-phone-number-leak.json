@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11",
+  "title": ["Yeny", "ultra pay"],
+  "subtitle": "API設定不備で情報漏えいの恐れ",
+  "figure": "133万件",
+  "lead": "電話番号と会員IDが対象",
+  "rows": [["公表", "2026年11月12日", "cyan"], ["決済情報", "漏えい未確認", "green"]],
+  "icon": "phone",
+  "badge": "warning",
+  "source": "株式会社Yeny"
+}
