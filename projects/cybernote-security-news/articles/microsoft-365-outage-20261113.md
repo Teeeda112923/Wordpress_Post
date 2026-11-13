@@ -36,8 +36,8 @@ sources:
 2026年11月13日未明（日本時間）、[Microsoft](https://www.microsoft.com/ja-jp)のMicrosoft 365で大規模な障害が起き、Outlookのメールに接続できない状態が世界各地に広がりました。
 影響はメールにとどまらず、TeamsやSharePoint Online、Microsoft 365 Copilotなど、業務の中心となるサービスにも及んでいます。
 
-Microsoftは、多数のサーバーが自動の正常性チェックに失敗して使えなくなり、残った設備に負荷が集中したと説明しています。
-本記事では、公式発表をもとに障害の経緯と原因を整理し、利用者と管理者がいま取るべき対応をまとめます。
+Microsoftは、多数のサーバーが正常性チェックに失敗して使えなくなり、残った設備に負荷が集中したと説明しています。
+午前9時30分時点で一部のサーバーは復帰していますが、全面復旧は発表されていません。本記事では経緯と原因、利用者と管理者の対応をまとめます。
 
 
 <!-- wp:group {"className":"is-style-information-box","layout":{"type":"constrained"}} -->
@@ -46,8 +46,6 @@ Microsoftは、多数のサーバーが自動の正常性チェックに失敗�
 <!-- /wp:paragraph -->
 <!-- wp:cocoon-blocks/embed-blogcard {"url":"https://www.cybernote.click/2026/11/11/docomo-5g-sa-tsushin-shogai-20261111/"} /--></div>
 <!-- /wp:group -->
-
-**【11月13日9時30分更新】** 一部のサーバーが復帰して安定して動いていると、Microsoftが発表しました。利用者側では、アプリが再接続したタイミングで段階的に回復する見込みです。全面的な復旧はまだ発表されていません。
 
 ## Microsoft 365障害の概要
 
