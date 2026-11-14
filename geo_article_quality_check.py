@@ -30,6 +30,8 @@ PRIMARY_DOMAINS = {
     "php.net", "rankmath.com",
     "binance.com",
     "fireworks.ai",
+    # wfx-loot（2026-11）の発見・分析を公開した調査企業。事象の一次報告者のため一次情報として扱う
+    "aikido.dev", "gitguardian.com", "chainguard.dev",
 }
 
 IMPACT_PATTERNS = {
