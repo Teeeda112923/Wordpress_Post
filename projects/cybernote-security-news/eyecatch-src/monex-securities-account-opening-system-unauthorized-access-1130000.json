@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11",
+  "title": ["マネックス証券", "口座開設システム"],
+  "subtitle": "不正アクセスで情報漏えいの恐れ",
+  "figure": "最大113万件",
+  "lead": "メールアドレスと本人確認書類の画像が対象",
+  "rows": [["公表", "2026年11月13日", "cyan"], ["不正取引", "現時点で未確認", "green"]],
+  "icon": "document",
+  "badge": "warning",
+  "source": "マネックス証券株式会社"
+}
