@@ -24,7 +24,7 @@ PRIMARY_DOMAINS = {
     "radiantviewer.com", "line.github.io", "cybozu.co.jp", "isc.org", "jetbrains.com",
     "paloaltonetworks.com", "openvpn.net", "progress.com", "arista.com",
     "thermofisher.com", "hitachi.co.jp", "ibm.com", "jp.sharp", "adobe.com",
-    "sogo.nu", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
+    "sogo.nu", "postgresql.org", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
     "trendmicro.com", "aboutamazon.com", "aws.amazon.com", "nato.int",
     "japanpost.jp", "sagawa-exp.co.jp", "park24.co.jp", "timescar.jp", "daiwa.jp",
     "php.net", "rankmath.com",
