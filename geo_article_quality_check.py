@@ -27,7 +27,7 @@ PRIMARY_DOMAINS = {
     "sogo.nu", "postgresql.org", "veeam.com", "gimp.org", "nvidia.com", "nvidia.custhelp.com",
     "trendmicro.com", "aboutamazon.com", "aws.amazon.com", "nato.int",
     "japanpost.jp", "sagawa-exp.co.jp", "park24.co.jp", "timescar.jp", "daiwa.jp",
-    "php.net", "rankmath.com",
+    "php.net", "rankmath.com", "citrix.com",
     "binance.com",
     "fireworks.ai",
     # wfx-loot（2026-11）の発見・分析を公開した調査企業。事象の一次報告者のため一次情報として扱う
