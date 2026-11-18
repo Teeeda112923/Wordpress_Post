@@ -1,0 +1,13 @@
+{
+  "layout": "panel",
+  "tone": "alert",
+  "kicker_date": "2026.11",
+  "title": ["プレイド", "KARTE"],
+  "subtitle": "不正アクセスで情報漏えい",
+  "figure": "メール7.9万件",
+  "lead": "全サービス停止・利用企業へ影響",
+  "rows": [["公表", "2026年11月16日", "cyan"], ["再開時期", "未定", "red"]],
+  "icon": "cloud",
+  "badge": "warning",
+  "source": "株式会社プレイド"
+}
