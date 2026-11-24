@@ -1,0 +1,5 @@
+state=published
+no361_post_id=9805
+no361_post_url=https://www.cybernote.click/2026/11/24/ai-affiliate-saishin-2026/
+no361_media=https://www.cybernote.click/wp-content/uploads/2026/11/ai-affiliate-saishin-2026.png
+run_url=https://github.com/Teeeda112923/Wordpress_Post/actions/runs/45334110335
