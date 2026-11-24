@@ -1,0 +1,12 @@
+{
+  "layout": "panel",
+  "tone": "update",
+  "kicker_date": "2026.11",
+  "title": ["セキュリティソフトは", "必要か"],
+  "subtitle": "Windows・iPhone・Android別",
+  "lead": "標準機能で足りる人と足りない人",
+  "rows": [["ウイルス対策", "標準機能で基本は足りる", "green"], ["偽サイト・偽SMS", "別の備えを検討", "red"]],
+  "icon": "monitor",
+  "badge": "shield",
+  "source": "Microsoft / Google / Apple"
+}
