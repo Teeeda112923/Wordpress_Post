@@ -1,0 +1,11 @@
+{
+  "layout": "stack",
+  "tone": "update",
+  "label": "セキュリティ更新",
+  "title": ["WordPress 7.1.5", "20件の問題を修正"],
+  "status": "Template Partで権限昇格の恐れ",
+  "action": "7.1.5か各系統の修正版へ更新",
+  "action_accent": "7.1.5",
+  "icon": "code",
+  "badge": "shield"
+}
